@@ -349,6 +349,25 @@ export function App() {
     [openDocumentById],
   )
 
+  const writeBibliography = useCallback(async (): Promise<void> => {
+    try {
+      const result = await api.writeBibliography()
+      const count = `${result.entries} ${result.entries === 1 ? 'entry' : 'entries'}`
+      const headline = result.written
+        ? `Wrote ${result.path} — ${count}.`
+        : `${result.path} was already up to date — ${count}.`
+      // Incomplete PDF metadata is reported rather than filled in, so the
+      // warnings travel with the result instead of being hidden.
+      setInsertNotice([headline, ...result.warnings].join(' '))
+    } catch (error) {
+      setInsertNotice(
+        error instanceof ApiError
+          ? error.body.message
+          : 'The bibliography could not be written.',
+      )
+    }
+  }, [])
+
   const undo = useCallback(
     async (change: ChangeRecord): Promise<void> => {
       try {
@@ -409,7 +428,7 @@ export function App() {
   if (fatal !== null) {
     return (
       <main class="fatal">
-        <h1>Research Workspace</h1>
+        <h1>Litmark</h1>
         <p>{fatal}</p>
       </main>
     )
@@ -512,6 +531,7 @@ export function App() {
               if (!result.queued) setInsertNotice(result.reason ?? 'No summary was queued.')
             }}
             onReextract={(documentId) => void api.reextract(documentId)}
+            onWriteBibliography={writeBibliography}
             onUndo={(change) => void undo(change)}
             onLoadChanges={async () => setChanges((await api.changes()).changes)}
           />

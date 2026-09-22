@@ -98,7 +98,7 @@ class ClaudeAgentBackend(AgentBackend):
                 authenticated=False,
                 message=(
                     "The Claude Agent SDK is not installed. Install the agent extra: "
-                    "pip install 'research-workspace[claude]'"
+                    "pip install 'litmark[claude]'"
                 ),
                 detail=error,
             )

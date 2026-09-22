@@ -7,6 +7,7 @@ no arbitrary-path file API: notes and documents are addressed by ID.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Query, Request, Response, UploadFile
@@ -90,6 +91,10 @@ class UndoRequest(BaseModel):
     expected_revision: str | None = None
 
 
+class BibliographyWrite(BaseModel):
+    cited_only: bool = False
+
+
 def build_router() -> APIRouter:
     router = APIRouter()
 
@@ -142,7 +147,11 @@ def build_router() -> APIRouter:
             "INSERT INTO changes(id, target_kind, target_id, origin, summary, "
             "base_revision, new_revision, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                f"chg-{note.revision[:12]}",
+                # A change ID must be unique per *edit*, not per resulting
+                # content: deriving it from the revision hash made saving a
+                # note back to text it previously held collide with the earlier
+                # change and fail the write with an integrity error.
+                f"chg-{uuid.uuid4().hex[:12]}",
                 "note",
                 note_id,
                 "user",
@@ -452,6 +461,35 @@ def build_router() -> APIRouter:
     async def resolve_reference(request: Request, body: ResolveRequest) -> dict[str, Any]:
         services = services_of(request)
         return dispatch(services.tools, "resolve_source", body.model_dump())
+
+    # --------------------------------------------------------- bibliography
+
+    # ``response_model=None``: this route answers with either JSON or the
+    # ``.bib`` file itself, which is not one Pydantic response shape.
+    @router.get("/bibliography", response_model=None)
+    async def get_bibliography(
+        request: Request, cited_only: bool = False, format: str = "json"
+    ) -> Response | dict[str, Any]:
+        """The BibTeX view of the project, as JSON or as the file itself.
+
+        ``cited_only`` narrows it to works a note or summary actually cites.
+        """
+        services = services_of(request)
+        bibliography = services.bibliography(cited_only=cited_only)
+        if format == "bibtex":
+            return PlainTextResponse(
+                bibliography.to_bibtex(),
+                media_type="application/x-bibtex; charset=utf-8",
+                headers={"content-disposition": 'attachment; filename="references.bib"'},
+            )
+        return bibliography.api_json()
+
+    @router.post("/bibliography")
+    async def write_bibliography(
+        request: Request, body: BibliographyWrite
+    ) -> dict[str, Any]:
+        """Write ``references.bib`` into the project directory."""
+        return services_of(request).write_bibliography(cited_only=body.cited_only)
 
     # -------------------------------------------------------- conversations
 

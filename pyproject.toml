@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "research-workspace"
+name = "litmark"
 version = "0.1.0"
 description = "Local research workspace: import papers, read cited summaries, write sourced Markdown notes, chat with a coding agent."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Research Workspace contributors" }]
-keywords = ["research", "pdf", "markdown", "notes", "agent"]
+authors = [{ name = "Litmark contributors" }]
+keywords = ["research", "pdf", "markdown", "notes", "agent", "bibtex"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Web Environment",
@@ -37,10 +37,12 @@ dependencies = [
 claude = ["claude-agent-sdk>=0.2,<1.0"]
 
 [project.scripts]
-research-workspace = "research_workspace.cli:main"
+litmark = "litmark.cli:main"
 
 [project.urls]
-Homepage = "https://example.invalid/research-workspace"
+Homepage = "https://github.com/tlamadon/litmark"
+Repository = "https://github.com/tlamadon/litmark"
+Issues = "https://github.com/tlamadon/litmark/issues"
 
 [dependency-groups]
 dev = [
@@ -55,10 +57,10 @@ dev = [
 # they must ship in *both* the wheel and the source archive, or installing
 # from an sdist would need a frontend toolchain. `artifacts` includes them
 # regardless of .gitignore.
-artifacts = ["src/research_workspace/static/**/*"]
+artifacts = ["src/litmark/static/**/*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/research_workspace"]
+packages = ["src/litmark"]
 
 [tool.hatch.build.targets.sdist]
 include = [

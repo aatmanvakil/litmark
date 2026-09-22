@@ -20,7 +20,7 @@ HOST = "127.0.0.1"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="research-workspace",
+        prog="litmark",
         description=(
             "A local research workspace: import papers, read cited summaries, write "
             "sourced Markdown notes, and chat with a coding agent."
@@ -99,7 +99,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  {workspace.notes_dir.relative_to(workspace.root)}/welcome.md")
     print()
     print("Next:")
-    print(f"  research-workspace serve {args.path} --open")
+    print(f"  litmark serve {args.path} --open")
     return 0
 
 
@@ -126,7 +126,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     url = f"http://{display_host}:{args.port}/"
     availability = services.agent_availability()
 
-    print(f"Research Workspace — {services.workspace.root}")
+    print(f"Litmark — {services.workspace.root}")
     print(f"  {url}")
     if not loopback:
         print(f"  bound to {args.host}:{args.port} — reachable beyond this machine.")
@@ -171,7 +171,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     workspace = Workspace(args.path)
     if not workspace.exists():
         print(f"project: not a project directory ({workspace.root})")
-        print("  run: research-workspace init <path>")
+        print("  run: litmark init <path>")
         return 1
     print(f"project: {workspace.root}")
 

@@ -12,7 +12,7 @@
  * Run against a project that has at least one note containing a `source:`
  * citation:
  *
- *   RW_BASE_URL=http://127.0.0.1:8765/ npm run test:browser
+ *   LITMARK_BASE_URL=http://127.0.0.1:8765/ npm run test:browser
  */
 
 import assert from 'node:assert/strict'
@@ -20,7 +20,7 @@ import { after, before, describe, test } from 'node:test'
 
 import { click, launchFirefox, navigate, script, waitFor } from './marionette.mjs'
 
-const BASE_URL = process.env.RW_BASE_URL
+const BASE_URL = process.env.LITMARK_BASE_URL
 const describeOrSkip = BASE_URL ? describe : describe.skip
 
 describeOrSkip('the application in Firefox', () => {
@@ -28,7 +28,7 @@ describeOrSkip('the application in Firefox', () => {
   let client
 
   before(async () => {
-    firefox = await launchFirefox({ binary: process.env.RW_FIREFOX ?? 'firefox' })
+    firefox = await launchFirefox({ binary: process.env.LITMARK_FIREFOX ?? 'firefox' })
     client = firefox.client
     await navigate(client, BASE_URL)
     // The page holds an SSE connection open, so wait on the UI, not on load.
@@ -318,5 +318,33 @@ describeOrSkip('the application in Firefox', () => {
     assert.ok(Math.abs(a.left - b.left) < 0.01, `x drifted: ${a.left} -> ${b.left}`)
     assert.ok(Math.abs(a.top - b.top) < 0.01, `y drifted: ${a.top} -> ${b.top}`)
     assert.ok(Math.abs(a.width - b.width) < 0.01, `width drifted: ${a.width} -> ${b.width}`)
+  })
+
+  test('A13: the sidebar writes a bibliography and reports what it found', async () => {
+    const actions = await script(
+      client,
+      `return [...document.querySelectorAll('.sidebar .head-actions *')].map((n) =>
+         n.textContent.trim(),
+       )`,
+    )
+    assert.ok(actions.includes('Write .bib'), `no bibliography action: ${actions.join(' | ')}`)
+
+    await click(client, '.sidebar .head-actions button')
+    const banner = await waitFor(
+      client,
+      `return document.querySelector('.banner span')?.textContent ?? null`,
+      { timeoutMs: 10000, label: 'the bibliography result banner' },
+    )
+    assert.match(banner, /references\.bib/, `unexpected banner: ${banner}`)
+    assert.match(banner, /entr(y|ies)/, `the banner does not report a count: ${banner}`)
+
+    // The download link must carry the session credential, or the browser
+    // fetches it without the header the API requires and gets a 401.
+    const href = await script(
+      client,
+      `return document.querySelector('.sidebar .head-actions a')?.getAttribute('href') ?? ''`,
+    )
+    assert.match(href, /format=bibtex/, `unexpected download link: ${href}`)
+    assert.match(href, /token=./, `the download link carries no credential: ${href}`)
   })
 })

@@ -59,8 +59,8 @@ const ROUTES = new Map([
 ])
 
 function buildDom() {
-  const html = readFileSync(join(here, '..', '..', 'src', 'research_workspace', 'static', 'index.html'), 'utf8')
-    .replace('<meta name="research-token" content="">', '<meta name="research-token" content="test-token">')
+  const html = readFileSync(join(here, '..', '..', 'src', 'litmark', 'static', 'index.html'), 'utf8')
+    .replace('<meta name="litmark-token" content="">', '<meta name="litmark-token" content="test-token">')
     // The bundle is injected manually below, so strip the script tags.
     .replace(/<script[^>]*><\/script>/g, '')
     .replace(/<link[^>]*>/g, '')

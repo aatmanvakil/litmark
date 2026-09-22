@@ -6,7 +6,7 @@
  */
 
 export const SESSION_TOKEN =
-  document.querySelector<HTMLMetaElement>('meta[name="research-token"]')?.content ?? ''
+  document.querySelector<HTMLMetaElement>('meta[name="litmark-token"]')?.content ?? ''
 
 export interface ApiErrorBody {
   code: string
@@ -34,7 +34,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
-  headers.set('x-research-token', SESSION_TOKEN)
+  headers.set('x-litmark-token', SESSION_TOKEN)
   if (init.body && !(init.body instanceof FormData)) {
     headers.set('content-type', 'application/json')
   }
@@ -146,6 +146,36 @@ export interface ReferenceRecord {
   message?: string
   /** Notes and summaries whose Markdown cites this reference. */
   cited_by?: Citation[]
+}
+
+export interface BibEntry {
+  key: string
+  document_id: string
+  title: string
+  entry_type: string
+  fields: Record<string, string>
+  /** Metadata the PDF did not supply; omitted from the entry, never guessed. */
+  unknown_fields: string[]
+  reference_ids: string[]
+  bibtex: string
+}
+
+export interface BibCitation {
+  reference_id: string
+  key: string
+  document_id: string
+  page_number: number
+  page_label: string | null
+  /** The LaTeX command for this passage, e.g. `\cite[p.~12]{key}`. */
+  cite: string
+  cited_by: Citation[]
+}
+
+export interface Bibliography {
+  entries: BibEntry[]
+  citations: BibCitation[]
+  warnings: string[]
+  bibtex: string
 }
 
 export interface SearchHit {
@@ -306,6 +336,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  bibliography: (citedOnly = false) =>
+    request<Bibliography>(`/bibliography?cited_only=${citedOnly}`),
+  writeBibliography: (citedOnly = false) =>
+    request<{ path: string; entries: number; written: boolean; warnings: string[] }>(
+      '/bibliography',
+      { method: 'POST', body: JSON.stringify({ cited_only: citedOnly }) },
+    ),
+  bibliographyUrl: (citedOnly = false) =>
+    `/api/bibliography?format=bibtex&cited_only=${citedOnly}&token=${encodeURIComponent(SESSION_TOKEN)}`,
 
   conversation: (id: string) => request<Conversation>(`/conversations/${encodeURIComponent(id)}`),
   createConversation: (title = 'Conversation') =>

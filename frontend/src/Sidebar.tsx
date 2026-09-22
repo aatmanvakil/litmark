@@ -23,6 +23,7 @@ export interface SidebarProps {
   onSearchJump: (hit: SearchHit) => void
   onSummarize: (documentId: string) => Promise<void>
   onReextract: (documentId: string) => void
+  onWriteBibliography: () => Promise<void>
   onUndo: (change: ChangeRecord) => void
   onLoadChanges: () => Promise<void>
 }
@@ -128,7 +129,27 @@ export function Sidebar(props: SidebarProps) {
       )}
 
       <section>
-        <h3>Documents</h3>
+        <div class="section-head">
+          <h3>Documents</h3>
+          <span class="head-actions">
+            <button
+              type="button"
+              class="link"
+              onClick={() => void props.onWriteBibliography()}
+              title="Write references.bib into the project directory"
+            >
+              Write .bib
+            </button>
+            <a
+              class="link"
+              href={api.bibliographyUrl()}
+              download="references.bib"
+              title="Download a BibTeX file for these documents"
+            >
+              Download
+            </a>
+          </span>
+        </div>
         {props.documents.length === 0 && (
           <p class="muted">
             No papers yet. Drag PDFs here, or use Import.

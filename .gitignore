@@ -7,7 +7,7 @@ build/
 *.egg-info/
 node_modules/
 frontend/dist/
-src/research_workspace/static/
+src/litmark/static/
 .pytest_cache/
 .ruff_cache/
 my-research/

@@ -12,8 +12,8 @@ import pathlib
 import pytest
 from conftest import make_pdf, rotate_and_crop
 
-from research_workspace.extraction import extract_pdf
-from research_workspace.references import locate_quote
+from litmark.extraction import extract_pdf
+from litmark.references import locate_quote
 
 # Asymmetric crop in PDF user space (bottom-left origin) on a 612x792 page.
 CROP = (60.0, 150.0, 520.0, 690.0)

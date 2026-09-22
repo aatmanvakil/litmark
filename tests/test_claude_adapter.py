@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from research_workspace.agent import claude_sdk
-from research_workspace.agent.claude_sdk import (
+from litmark.agent import claude_sdk
+from litmark.agent.claude_sdk import (
     ALLOWED_TOOLS,
     DISALLOWED_TOOLS,
     MCP_SERVER_NAME,
@@ -21,7 +21,7 @@ from research_workspace.agent.claude_sdk import (
     _session_id_of,
     _short_tool_name,
 )
-from research_workspace.agent.tools import TOOL_SCHEMAS, ProjectTools
+from litmark.agent.tools import TOOL_SCHEMAS, ProjectTools
 
 sdk_installed = claude_sdk.sdk_available()[0]
 requires_sdk = pytest.mark.skipif(not sdk_installed, reason="claude-agent-sdk is not installed")
@@ -72,7 +72,7 @@ def test_built_in_file_and_shell_tools_are_disabled(services, monkeypatch):
 
     # Constructing the options is enough; the run itself is not started.
     instance = backend(services)
-    from research_workspace.agent.base import RunContext, RunRequest
+    from litmark.agent.base import RunContext, RunRequest
 
     request = RunRequest(
         run_id="run-1",

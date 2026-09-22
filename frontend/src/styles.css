@@ -281,6 +281,11 @@ select {
   justify-content: space-between;
 }
 
+.head-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
 .list {
   list-style: none;
   margin: 0;

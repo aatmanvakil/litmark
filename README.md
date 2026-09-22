@@ -1,4 +1,4 @@
-# Research Workspace
+# Litmark
 
 A local research application: import papers, read short cited summaries, write
 Markdown notes, inspect the cited PDF passages, and chat with a coding agent
@@ -13,8 +13,8 @@ is a convenient view onto those files, not their owner.
 ## Install
 
 ```bash
-python -m pip install research-workspace          # core reader and editor
-python -m pip install 'research-workspace[claude]'  # plus the agent adapter
+python -m pip install litmark          # core reader and editor
+python -m pip install 'litmark[claude]'  # plus the agent adapter
 ```
 
 Requires Python 3.11+. Tested on macOS and Linux. The published wheel contains
@@ -24,15 +24,15 @@ server to run this application.**
 With `pipx` or `uv`:
 
 ```bash
-pipx install research-workspace
-uv tool install research-workspace
+pipx install litmark
+uv tool install litmark
 ```
 
 ## Use
 
 ```bash
-research-workspace init ./my-research
-research-workspace serve ./my-research --open
+litmark init ./my-research
+litmark serve ./my-research --open
 ```
 
 `serve` binds to `127.0.0.1`, prints the local URL, and serves exactly one
@@ -49,10 +49,10 @@ reject every real request. Widen it explicitly:
 
 ```bash
 # Bind beyond loopback; any Host header is then accepted.
-research-workspace serve ./my-research --host 0.0.0.0
+litmark serve ./my-research --host 0.0.0.0
 
 # Or name the proxy's hostname and keep the check strict.
-research-workspace serve ./my-research --host 0.0.0.0 --allow-host papers.internal
+litmark serve ./my-research --host 0.0.0.0 --allow-host papers.internal
 ```
 
 The per-process session credential embedded in the served page remains the
@@ -66,7 +66,7 @@ ssh -N -L 8765:127.0.0.1:8765 you@the-machine
 Check your environment at any time:
 
 ```bash
-research-workspace doctor ./my-research
+litmark doctor ./my-research
 ```
 
 `doctor` reports on the workspace, the optional agent dependency, the runtime
@@ -95,6 +95,7 @@ and the interface says so plainly.
 | `documents/<id>/summary.md` | Editable, cited summary. |
 | `notes/*.md` | User and agent notes. |
 | `references.json` | Versioned source registry. |
+| `references.bib` | Generated BibTeX bibliography of the imported documents. |
 | `.research/state.sqlite` | Conversations, events, jobs, run state, change log. |
 | `.research/history/` | Previous file contents, for review and undo. |
 | `.research/runs/` | Staged agent edits and run diagnostics. |
@@ -115,14 +116,28 @@ passage, and normalized highlight rectangles. Reference resolution validates
 *where* a passage is, not whether it supports the claim — you assess that by
 reading the evidence.
 
+## Bibliography
+
+**Write .bib** in the sidebar generates `references.bib` in the project
+directory, and **Download** fetches the same file without writing it. There is
+one entry per imported document — a `.bib` entry is a work, so the page each
+reference points at travels in the `\cite[p.~12]{key}` command the export
+returns alongside the entries, not in the entry itself.
+
+Entries carry only what the PDF actually supplies. A paper with no author
+metadata gets an entry with no `author` field and a warning saying so; nothing
+is filled in from general knowledge. The output is deterministic, so exporting
+an unchanged bibliography rewrites nothing, and a `.bib` you edited by hand is
+copied into `.research/history/` before it is replaced.
+
 ## Development
 
 ```bash
 uv venv && uv pip install -e . --group dev
 npm --prefix frontend install
-npm --prefix frontend run build      # writes src/research_workspace/static/
+npm --prefix frontend run build      # writes src/litmark/static/
 uv run pytest
-uv run research-workspace serve ./my-research --reload
+uv run litmark serve ./my-research --reload
 ```
 
 `npm run dev` runs the frontend with hot reload against a server started
@@ -137,8 +152,8 @@ npm --prefix frontend test        # renderer unit tests, and the bundle run in a
 
 # Real-browser checks (A2 live preview, A6 highlight geometry under zoom).
 # Point it at a project whose open note contains a source: citation.
-research-workspace serve ./my-research &
-RW_BASE_URL=http://127.0.0.1:8765/ npm --prefix frontend run test:browser
+litmark serve ./my-research &
+LITMARK_BASE_URL=http://127.0.0.1:8765/ npm --prefix frontend run test:browser
 ```
 
 The browser suite drives headless Firefox over Marionette. Headless Chromium is

@@ -561,6 +561,32 @@ _PLACEHOLDER_TITLES = {
 }
 
 
+_PLACEHOLDER_AUTHORS = {
+    "anonymous",
+    "unknown",
+    "author",
+    "authors",
+    "unspecified",
+    "none",
+    "user",
+    "owner",
+    "administrator",
+}
+
+
+def _clean_authors(raw: str) -> str | None:
+    """Reject the placeholder authors PDF producers write by default.
+
+    Same reasoning as ``_clean_title``, and it matters most in the generated
+    bibliography: an entry crediting "anonymous" is worse than one that plainly
+    says the author is unknown.
+    """
+    authors = " ".join(raw.split())
+    if not authors or authors.lower() in _PLACEHOLDER_AUTHORS:
+        return None
+    return authors
+
+
 def _clean_title(raw: str) -> str | None:
     """Reject the placeholder titles that PDF producers write by default.
 
@@ -601,7 +627,7 @@ def pdf_metadata(path: Path) -> dict[str, Any]:
             info["page_count"] = None
         meta = reader.metadata or {}
         info["title"] = _clean_title(str(meta.get("/Title") or ""))
-        info["authors"] = (str(meta.get("/Author") or "")).strip() or None
+        info["authors"] = _clean_authors(str(meta.get("/Author") or ""))
         raw_date = str(meta.get("/CreationDate") or "")
         match = re.search(r"(19|20)\d{2}", raw_date)
         if match:

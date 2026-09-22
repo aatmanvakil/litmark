@@ -17,10 +17,10 @@ import json
 import pytest
 from conftest import make_pdf, upload, wait_for_extraction
 
-from research_workspace.agent.base import RunContext
-from research_workspace.api.app import TOKEN_HEADER, create_app
-from research_workspace.services import Services
-from research_workspace.workspace import Workspace, revision_of
+from litmark.agent.base import RunContext
+from litmark.api.app import TOKEN_HEADER, create_app
+from litmark.services import Services
+from litmark.workspace import Workspace, revision_of
 
 
 def encrypted_pdf() -> bytes:
@@ -531,7 +531,7 @@ def test_a11_without_credentials_notes_and_pdfs_still_work(tmp_path, paper_one, 
     workspace = Workspace.initialize(tmp_path / "project")
     services = Services(workspace, backend_name="fake")
 
-    from research_workspace.agent.base import Availability
+    from litmark.agent.base import Availability
 
     monkeypatch.setattr(
         services.backend,
@@ -682,6 +682,56 @@ def test_a12_partial_extraction_is_reported(client):
     assert summary["extraction_warnings"], "the limitation travels with the summary"
 
 
+# ------------------------------------------------------------------ A13
+
+
+def test_a13_bibliography_exports_one_entry_per_document(
+    client, services, paper_one, paper_two
+):
+    """One entry per work, pages in the cite commands, gaps left as gaps."""
+    first = upload(client, "paper-one.pdf", paper_one)["imported"][0]["document"]
+    second = upload(client, "paper-two.pdf", paper_two)["imported"][0]["document"]
+    for document in (first, second):
+        wait_for_extraction(client, document["document_id"])
+
+    created = client.post(
+        "/api/references",
+        json={
+            "document_id": first["document_id"],
+            "page_number": 2,
+            "quote": "Table 1 reports the baseline estimates.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    reference_id = created.json()["reference_id"]
+
+    payload = client.get("/api/bibliography").json()
+    keys = [entry["key"] for entry in payload["entries"]]
+    assert len(payload["entries"]) == 2
+    assert len(set(keys)) == 2, "two works must not share a citation key"
+
+    # The fixtures carry no real author metadata, so the field is absent and
+    # the omission is reported instead of being filled in.
+    entry = next(e for e in payload["entries"] if e["document_id"] == first["document_id"])
+    assert "author" not in entry["fields"]
+    assert "author" in entry["unknown_fields"]
+    assert any("No author" in warning for warning in payload["warnings"])
+
+    # A page locator belongs to the citation, never to the entry.
+    assert "pages" not in entry["fields"]
+    command = next(c for c in payload["citations"] if c["reference_id"] == reference_id)
+    assert command["cite"] == f"\\cite[p.~2]{{{entry['key']}}}"
+
+    written = client.post("/api/bibliography", json={}).json()
+    bib = services.workspace.bibliography_file
+    assert written["written"] is True
+    assert bib.is_file()
+    assert bib.read_text("utf-8").count("@misc{") == 2
+
+    # Regenerating an unchanged bibliography rewrites nothing.
+    assert client.post("/api/bibliography", json={}).json()["written"] is False
+
+
 # ------------------------------------------------------ boundaries (§10)
 
 
@@ -706,7 +756,7 @@ def test_local_boundaries_reject_unrelated_callers(services):
 
 def test_project_relative_paths_are_validated(services, tmp_path):
     """Path traversal and symlink escapes are refused before any read or write."""
-    from research_workspace.errors import InvalidInput, PathEscape
+    from litmark.errors import InvalidInput, PathEscape
 
     with pytest.raises(InvalidInput):
         services.workspace.note_path("../../etc/passwd")
@@ -860,7 +910,7 @@ def test_a_summary_counts_as_citing_a_reference(client, services, paper_one):
 
 def test_citations_inside_code_blocks_are_not_citations(services):
     """A worked example in a fenced block documents the syntax; it cites nothing."""
-    from research_workspace.references import source_ids_in_markdown
+    from litmark.references import source_ids_in_markdown
 
     text = (
         "# Guide\n\n"
@@ -876,3 +926,41 @@ def test_citations_inside_code_blocks_are_not_citations(services):
     welcome = services.workspace.read_note("welcome").text
     assert "source:ref-001" in welcome, "the example should still be visible"
     assert source_ids_in_markdown(welcome) == set()
+
+
+def test_saving_a_note_back_to_earlier_text_records_a_new_change(client):
+    """Change IDs identify an edit, not a resulting revision.
+
+    Typing something, deleting it, and saving again lands on text the note has
+    held before. A change ID derived from the content hash collided with the
+    earlier record and the save failed outright.
+    """
+    note = client.post("/api/notes", json={"title": "Round trip"}).json()
+
+    first = client.put(
+        f"/api/notes/{note['note_id']}",
+        json={"text": "# Round trip\n\nOriginal.\n", "expected_revision": note["revision"]},
+    )
+    assert first.status_code == 200
+
+    second = client.put(
+        f"/api/notes/{note['note_id']}",
+        json={"text": "# Round trip\n\nEdited.\n", "expected_revision": first.json()["revision"]},
+    )
+    assert second.status_code == 200
+
+    # Back to exactly the earlier text, which repeats an earlier revision hash.
+    third = client.put(
+        f"/api/notes/{note['note_id']}",
+        json={
+            "text": "# Round trip\n\nOriginal.\n",
+            "expected_revision": second.json()["revision"],
+        },
+    )
+    assert third.status_code == 200, third.text
+    assert third.json()["revision"] == first.json()["revision"]
+
+    changes = client.get("/api/changes").json()["changes"]
+    mine = [c for c in changes if c["target_id"] == note["note_id"]]
+    assert len(mine) >= 3, "each save should record its own change"
+    assert len({c["change_id"] for c in mine}) == len(mine), "change IDs must be unique"

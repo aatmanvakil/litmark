@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 SYSTEM_PROMPT = """\
-You are the research assistant inside a local Research Workspace project. The user
+You are the research assistant inside a local Litmark project. The user
 imports papers as PDFs, reads short cited summaries, and writes Markdown notes.
 
 How you work

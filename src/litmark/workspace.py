@@ -26,6 +26,7 @@ PROJECT_FILE = "project.toml"
 DOCUMENTS_DIR = "documents"
 NOTES_DIR = "notes"
 REFERENCES_FILE = "references.json"
+BIBLIOGRAPHY_FILE = "references.bib"
 STATE_DIR = ".research"
 HISTORY_DIR = f"{STATE_DIR}/history"
 RUNS_DIR = f"{STATE_DIR}/runs"
@@ -141,6 +142,11 @@ class Workspace:
         return self.root / REFERENCES_FILE
 
     @property
+    def bibliography_file(self) -> Path:
+        """The generated BibTeX file; regenerated, but an ordinary project file."""
+        return self.root / BIBLIOGRAPHY_FILE
+
+    @property
     def state_dir(self) -> Path:
         return self.root / STATE_DIR
 
@@ -181,7 +187,7 @@ class Workspace:
         project_name = name or workspace.root.name
         atomic_write_text(
             workspace.project_file,
-            "# Research Workspace project settings (no secrets belong here).\n"
+            "# Litmark project settings (no secrets belong here).\n"
             f'schema_version = {SCHEMA_VERSION}\n'
             f'name = "{project_name}"\n'
             f'created_at = "{utcnow()}"\n'
@@ -209,8 +215,8 @@ class Workspace:
             raise NotFound(f"No such project directory: {self.root}", path=str(self.root))
         if not self.project_file.is_file():
             raise NotFound(
-                f"{self.root} is not a Research Workspace project "
-                f"(missing {PROJECT_FILE}). Run `research-workspace init` first.",
+                f"{self.root} is not a Litmark project "
+                f"(missing {PROJECT_FILE}). Run `litmark init` first.",
                 path=str(self.root),
             )
         self._ensure_dirs()

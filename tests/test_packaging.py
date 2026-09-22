@@ -55,7 +55,7 @@ def wheel() -> Path:
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv is required to build the distribution")
-    static = PROJECT_ROOT / "src" / "research_workspace" / "static" / "index.html"
+    static = PROJECT_ROOT / "src" / "litmark" / "static" / "index.html"
     if not static.is_file():
         pytest.skip("browser assets are not built; run `npm --prefix frontend run build`")
 
@@ -66,7 +66,7 @@ def wheel() -> Path:
         check=True,
         capture_output=True,
     )
-    wheels = sorted(out.glob("research_workspace-*.whl"))
+    wheels = sorted(out.glob("litmark-*.whl"))
     assert wheels, "no wheel was produced"
     return wheels[-1]
 
@@ -88,7 +88,7 @@ def installed(wheel: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
 def test_a1_wheel_serves_the_interface_without_node(
     installed: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    command = installed / "bin" / "research-workspace"
+    command = installed / "bin" / "litmark"
     assert command.is_file(), "the console entry point was not installed"
 
     # Nothing in the environment provides a JavaScript toolchain.
@@ -123,7 +123,7 @@ def test_a1_wheel_serves_the_interface_without_node(
 
         # The complete interface, with the session credential injected.
         assert '<div id="app">' in html
-        token = html.split('name="research-token" content="', 1)[1].split('"', 1)[0]
+        token = html.split('name="litmark-token" content="', 1)[1].split('"', 1)[0]
         assert len(token) > 20
 
         # Every referenced asset is served locally by this process.
@@ -146,7 +146,7 @@ def test_a1_wheel_serves_the_interface_without_node(
                     / "lib"
                     / f"python3.{sys.version_info.minor}"
                     / "site-packages"
-                    / "research_workspace"
+                    / "litmark"
                     / "static"
                     / "assets"
                 ).iterdir()
@@ -159,7 +159,7 @@ def test_a1_wheel_serves_the_interface_without_node(
 
         # The API works, and the boundary still rejects an unauthenticated call.
         request = urllib.request.Request(f"{base}/api/state")
-        request.add_header("x-research-token", token)
+        request.add_header("x-litmark-token", token)
         with urllib.request.urlopen(request, timeout=5) as response:
             state = json.loads(response.read())
         assert state["project"]["schema_version"] == 1
@@ -179,7 +179,7 @@ def test_a1_wheel_serves_the_interface_without_node(
 
 
 def test_a1_doctor_reports_without_printing_secrets(installed: Path, tmp_path_factory) -> None:
-    command = installed / "bin" / "research-workspace"
+    command = installed / "bin" / "litmark"
     project = tmp_path_factory.mktemp("doctor-project") / "papers"
     subprocess.run([str(command), "init", str(project)], check=True, capture_output=True)
 

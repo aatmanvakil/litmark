@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from research_workspace.api.app import TOKEN_HEADER, _hostname_of, create_app
-from research_workspace.cli import build_parser
+from litmark.api.app import TOKEN_HEADER, _hostname_of, create_app
+from litmark.cli import build_parser
 
 
 def client_for(services, **kwargs) -> TestClient:

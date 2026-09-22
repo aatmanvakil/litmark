@@ -1,9 +1,9 @@
 {
-  "name": "research-workspace-frontend",
+  "name": "litmark-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Browser assets for the research-workspace Python package.",
+  "description": "Browser assets for the litmark Python package.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -30,7 +30,7 @@ from .routes import build_router
 
 log = logging.getLogger(__name__)
 
-TOKEN_HEADER = "x-research-token"
+TOKEN_HEADER = "x-litmark-token"
 TOKEN_QUERY = "token"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0"}
 # Backwards-compatible alias; the effective set is now per-app.
@@ -41,7 +41,7 @@ ANY_HOST = "*"
 def static_root() -> Path | None:
     """Locate bundled assets through package resources, not the cwd."""
     try:
-        root = resources.files("research_workspace") / "static"
+        root = resources.files("litmark") / "static"
     except ModuleNotFoundError:  # pragma: no cover - package always importable here
         return None
     path = Path(str(root))
@@ -64,7 +64,7 @@ def create_app(
     effective_hosts = set(LOOPBACK_HOSTS) | (allowed_hosts or set())
     accept_any_host = ANY_HOST in effective_hosts
     app = FastAPI(
-        title="Research Workspace",
+        title="Litmark",
         version="0.1.0",
         docs_url=None,
         redoc_url=None,
@@ -187,8 +187,8 @@ def _render_index(assets: Path, token: str) -> str:
     An unrelated website cannot read this HTML, so it cannot obtain the token.
     """
     html = (assets / "index.html").read_text("utf-8")
-    marker = '<meta name="research-token" content="">'
-    replacement = f'<meta name="research-token" content="{token}">'
+    marker = '<meta name="litmark-token" content="">'
+    replacement = f'<meta name="litmark-token" content="{token}">'
     if marker in html:
         return html.replace(marker, replacement)
     return html.replace("<head>", f"<head>\n    {replacement}", 1)

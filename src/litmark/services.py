@@ -16,12 +16,13 @@ from .agent.claude_sdk import ClaudeAgentBackend
 from .agent.fake import FakeBackend
 from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
+from .bibliography import Bibliography, build_bibliography
 from .db import Database
 from .documents import DocumentStore
 from .events import DOCUMENT_UPDATED, EventBus
 from .jobs import JobQueue
-from .references import ReferenceStore
-from .workspace import Workspace
+from .references import ReferenceStore, citations_by_reference
+from .workspace import Workspace, atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,40 @@ class Services:
             except Exception as exc:  # noqa: BLE001 - a summary failure is not fatal
                 log.info("Automatic summary for %s not queued: %s", document_id, exc)
         return result
+
+    # -------------------------------------------------------- bibliography
+
+    def bibliography(self, *, cited_only: bool = False) -> Bibliography:
+        """Build the BibTeX view of the project's documents and references."""
+        return build_bibliography(
+            self.documents.list(),
+            self.references.all(),
+            citations_by_reference(self.workspace, self.documents),
+            cited_only=cited_only,
+        )
+
+    def write_bibliography(self, *, cited_only: bool = False) -> dict[str, Any]:
+        """Write ``references.bib`` into the project directory.
+
+        The generated text is deterministic, so regenerating an unchanged
+        bibliography rewrites nothing. When it has changed, any previous file —
+        including one edited by hand — is snapshotted first.
+        """
+        bibliography = self.bibliography(cited_only=cited_only)
+        text = bibliography.to_bibtex()
+        path = self.workspace.resolve_inside(self.workspace.bibliography_file)
+        current = path.read_text("utf-8") if path.is_file() else None
+        changed = current != text
+        if changed:
+            if current is not None:
+                self.workspace.snapshot(path, reason="bibliography")
+            atomic_write_text(path, text)
+        return {
+            "path": path.name,
+            "entries": len(bibliography.entries),
+            "written": changed,
+            "warnings": bibliography.warnings,
+        }
 
     # -------------------------------------------------------------- status
 

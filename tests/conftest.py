@@ -14,9 +14,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from research_workspace.api.app import TOKEN_HEADER, create_app
-from research_workspace.services import Services
-from research_workspace.workspace import Workspace
+from litmark.api.app import TOKEN_HEADER, create_app
+from litmark.services import Services
+from litmark.workspace import Workspace
 
 LETTER = (612.0, 792.0)
 

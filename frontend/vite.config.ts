@@ -15,7 +15,7 @@ export default defineConfig({
     jsxImportSource: 'preact',
   },
   build: {
-    outDir: '../src/research_workspace/static',
+    outDir: '../src/litmark/static',
     emptyOutDir: true,
     sourcemap: true,
     assetsDir: 'assets',
@@ -34,7 +34,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      // `research-workspace serve --dev-origin http://127.0.0.1:5173`
+      // `litmark serve --dev-origin http://127.0.0.1:5173`
       '/api': { target: 'http://127.0.0.1:8765', changeOrigin: false },
     },
   },

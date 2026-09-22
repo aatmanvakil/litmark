@@ -1,4 +1,4 @@
-# Research Workspace
+# Litmark
 
 Product and implementation specification · Draft v0.1 · 22 September 2026
 
@@ -12,7 +12,7 @@ The central experience is:
 
 The application is also a teaching example for an agentic research class. Its architecture and files should be understandable enough that students can inspect them, ask a coding agent to extend them, and verify the resulting behavior.
 
-This document specifies a proposed application, not an existing package. `research-workspace` is a placeholder package and command name; check availability before release.
+The package and command name is `litmark`, confirmed available on PyPI before the first release.
 
 ## 2. Product principles
 
@@ -30,16 +30,16 @@ Target Python 3.11 or newer, initially tested on macOS and Linux. Keep paths and
 Intended installation and launch, after publication:
 
 ```bash
-python -m pip install research-workspace
-research-workspace init ./my-research
-research-workspace serve ./my-research --open
+python -m pip install litmark
+litmark init ./my-research
+litmark serve ./my-research --open
 ```
 
 For agent support, provide one optional dependency extra, initially proposed as:
 
 ```bash
-python -m pip install 'research-workspace[claude]'
-research-workspace doctor
+python -m pip install 'litmark[claude]'
+litmark doctor
 ```
 
 Document virtual-environment installation, plus optional `pipx` or `uv tool` instructions. `doctor` checks the workspace, optional agent dependency, required runtime availability, and authentication configuration without printing secrets. Provider credentials and any provider billing remain separate from installing this application; do not promise that a consumer chat subscription supplies SDK access.
@@ -58,7 +58,7 @@ Design for a laptop browser: quiet typography, readable text widths, resizable p
 
 | Area | Contents and behavior |
 | --- | --- |
-| Project sidebar | Documents and Notes sections, search, import button, new-note action; each document shows title, summary preview, and ingestion status. |
+| Project sidebar | Documents and Notes sections, search, import button, new-note action, bibliography export; each document shows title, summary preview, and ingestion status. |
 | Main editor | The current note or document summary, using Markdown live preview. |
 | Right source panel | PDF viewer, filename/title, page controls, zoom, search, and evidence highlights. The document scrolls continuously rather than a page at a time, and every registered mark in it is drawn, not only the one just opened. |
 | Chat drawer | Persistent conversation, context attachments, streaming replies, stop button, and expandable tool activity. |
@@ -172,6 +172,18 @@ A page-only citation has no rectangles and so draws no mark; the panel says the 
 
 Changing the imported PDF creates a new document version/identity rather than silently moving old references to different bytes. Deleting or relocating a source must produce a recoverable missing-source state.
 
+### Exporting a bibliography
+
+A citation points at a passage; a bibliography lists the works those passages are in. The project exports an ordinary BibTeX file, `references.bib`, with **one entry per imported document** — not one per reference, which would turn every quotation into a separate work. The page belongs in the citation command instead, so the export also returns, for each reference ID, the `\cite[p.~12]{key}` that cites it, using the printed page label when the PDF has one and the physical page number otherwise.
+
+Citation keys are surname, year, and first meaningful title word (`researcher2016mobility`), with a letter suffix when two works would collide. With no author the title word leads instead (`mobility2026`), since a key beginning with a digit reads badly and some tooling dislikes it. Given neither an author nor a year, the document ID is the key: one resting only on a title that was itself guessed from the first line of a PDF is neither stable nor unique.
+
+Entries carry only what the document supplies — author, title, year, and the project-relative path of the original PDF — and use `@misc`, because an imported PDF does not say where it was published. Missing metadata is omitted and reported with the export, never filled in from general knowledge. Producers' placeholder values are treated as missing for the same reason: an entry crediting "anonymous" is worse than one that says the author is unknown, and the title rule in §5 already rejects "untitled". A reference whose document has been deleted produces a warning rather than an entry.
+
+The file is derived but is an ordinary project file, so regeneration must not destroy work: the generated text is deterministic, an unchanged bibliography is not rewritten at all, and a `.bib` edited by hand is snapshotted into the history directory before it is replaced. An export can be narrowed to the works a note or summary actually cites — what a paper's reference list should contain — and covers every imported document by default.
+
+Reference-manager integration (Zotero, CSL styles, venue metadata lookup) remains out of scope; this is a plain file the user can hand to LaTeX or import elsewhere.
+
 ## 7. Chat and the coding agent
 
 Chat controls an existing coding-agent runtime through a Python adapter. This is a persistent agent session that can read files, search documents, call source tools, and produce file edits.
@@ -248,6 +260,7 @@ Keep user material as files in a movable project directory. Proposed layout:
 | `documents/<id>/summary.md` | Editable, cited summary. |
 | `notes/*.md` | User and agent notes. |
 | `references.json` | Versioned source registry. |
+| `references.bib` | Generated BibTeX bibliography of the imported documents. |
 | `.research/state.sqlite` | Conversations, durable events, jobs, run state, and change log. |
 | `.research/history/` | Previous file contents for review and undo. |
 | `.research/runs/` | Staged edits and run diagnostics. |
@@ -278,7 +291,7 @@ FastAPI supports serving bundled static files ([documentation](https://fastapi.t
 
 Keep a small Python module for each domain: workspace/files, documents/extraction, references, agent adapter, jobs/events, and HTTP routes. CPU-heavy extraction runs off the web event loop. A single-process job queue with SQLite recovery is enough initially; no Redis, Celery, or separate database server.
 
-Core API resources should cover documents/uploads, page retrieval and PDF bytes, source resolution, notes with revisions, conversations/runs/cancellation, change review/undo, and resumable events. Return validation errors and conflicts explicitly. Avoid an arbitrary-path file API.
+Core API resources should cover documents/uploads, page retrieval and PDF bytes, source resolution, notes with revisions, bibliography export, conversations/runs/cancellation, change review/undo, and resumable events. Return validation errors and conflicts explicitly. Avoid an arbitrary-path file API.
 
 ### Packaging contract
 
@@ -301,11 +314,11 @@ The target application includes ingestion, summaries, live-preview editing, PDF 
 | 1. Package and editor | Install a wheel; launch the Python server; edit, save, and reopen a Markdown note with basic live preview. |
 | 2. Documents and evidence | Import PDFs; extract/search page text; open page links; resolve and display a quotation highlight. |
 | 3. Agent workflow | Connect one real agent backend; stream chat; create cited summaries; write a sourced note with version checks and undo. |
-| 4. Complete interaction | Insert references from manual PDF selections; finish math rendering, conflict UX, cancellation/reconnect recovery, and release checks. |
+| 4. Complete interaction | Insert references from manual PDF selections; export a BibTeX bibliography; finish math rendering, conflict UX, cancellation/reconnect recovery, and release checks. |
 
 Prototype the live-preview cursor behavior and quote-to-PDF geometry early. For a short class, provide the shell and editor integration as starter code and let students build a complete document-to-agent-to-note workflow. Building the full application from an empty repository is a larger exercise.
 
-Deferred: OCR, document URL downloads, Word/HTML ingestion, bibliography/Zotero integration, semantic search, multiple agent providers, arbitrary analysis execution, multi-user collaboration, full mobile editing, complex tables, and public hosting. Keep extension points small rather than building a plugin framework first.
+Deferred: OCR, document URL downloads, Word/HTML ingestion, Zotero and other reference-manager integration, semantic search, multiple agent providers, arbitrary analysis execution, multi-user collaboration, full mobile editing, complex tables, and public hosting. Keep extension points small rather than building a plugin framework first.
 
 ## 12. Acceptance criteria
 
@@ -323,6 +336,7 @@ Deferred: OCR, document URL downloads, Word/HTML ingestion, bibliography/Zotero 
 | A10 | Disconnect/reconnect chat without duplicate messages; stop a running agent task; restart the server and retain transcript and clear interrupted-run state. |
 | A11 | Without provider credentials, notes and PDFs remain usable and summaries/chat clearly indicate configuration is needed. |
 | A12 | A malformed, encrypted, or scanned PDF reports its processing limitation and leaves other imports usable. |
+| A13 | Export a bibliography for the imported papers: one entry per document with a usable key, page locators in the `\cite` commands rather than the entries, omitted-and-reported fields where the PDF supplies no author or year, and a second export that rewrites nothing. |
 
 Use a small deterministic fixture corpus for geometry, references, and conflicts; use a fake adapter only for reproducible UI/event tests. A release still requires at least one actual provider-backed end-to-end run. Test package installation, not just the development server.
 
