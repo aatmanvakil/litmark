@@ -123,6 +123,12 @@ export interface PageRecord {
   text: string
 }
 
+export interface Citation {
+  kind: 'note' | 'summary'
+  id: string
+  title: string
+}
+
 export interface ReferenceRecord {
   reference_id: string
   document_id: string
@@ -138,6 +144,8 @@ export interface ReferenceRecord {
   document_sha256_matches?: boolean
   missing_source?: boolean
   message?: string
+  /** Notes and summaries whose Markdown cites this reference. */
+  cited_by?: Citation[]
 }
 
 export interface SearchHit {
@@ -279,7 +287,10 @@ export const api = {
       `/search?q=${encodeURIComponent(query)}`,
     ),
 
-  listReferences: () => request<{ references: ReferenceRecord[] }>('/references'),
+  listReferences: (documentId?: string) =>
+    request<{ references: ReferenceRecord[] }>(
+      documentId ? `/references?document_id=${encodeURIComponent(documentId)}` : '/references',
+    ),
   getReference: (id: string) => request<ReferenceRecord>(`/references/${encodeURIComponent(id)}`),
   createReference: (payload: {
     document_id: string

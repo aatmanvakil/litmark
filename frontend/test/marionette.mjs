@@ -139,8 +139,13 @@ export async function script(client, body, args = []) {
 export async function waitFor(client, expression, { timeoutMs = 20000, label = expression } = {}) {
   const deadline = Date.now() + timeoutMs
   let last
+  // Marionette runs a script as a function body, so a bare expression yields
+  // undefined. Accept either form rather than making every caller remember.
+  const body = expression.trimStart().startsWith('return')
+    ? expression
+    : `return (${expression})`
   while (Date.now() < deadline) {
-    last = await script(client, `return (${expression})`)
+    last = await script(client, body)
     if (last) return last
     await new Promise((resolve) => setTimeout(resolve, 200))
   }

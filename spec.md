@@ -60,7 +60,7 @@ Design for a laptop browser: quiet typography, readable text widths, resizable p
 | --- | --- |
 | Project sidebar | Documents and Notes sections, search, import button, new-note action; each document shows title, summary preview, and ingestion status. |
 | Main editor | The current note or document summary, using Markdown live preview. |
-| Right source panel | PDF viewer, filename/title, page controls, zoom, search, and the currently selected evidence highlight. |
+| Right source panel | PDF viewer, filename/title, page controls, zoom, search, and evidence highlights. The document scrolls continuously rather than a page at a time, and every registered mark in it is drawn, not only the one just opened. |
 | Chat drawer | Persistent conversation, context attachments, streaming replies, stop button, and expandable tool activity. |
 
 The sidebar, source panel, and chat drawer can collapse. Chat must not permanently shrink the editor and PDF into unreadable columns. On narrower windows, the source panel may replace the main view, with an explicit return-to-note action. Full mobile editing is outside the initial scope.
@@ -161,6 +161,14 @@ The browser sends the selected text with its surrounding context and the server 
 Normalize whitespace, common ligatures, and line-break hyphenation with an offset mapping back to extracted characters. Repeated passages require contextual disambiguation. If a unique match cannot be established, return `ambiguous` or `not_found`; do not highlight an arbitrary region. A clearly marked page-only citation may be used when precise matching is unavailable.
 
 Reference resolution validates location, not whether the passage actually supports the claim. The user assesses that by reading the evidence.
+
+### Showing every mark
+
+The source panel draws all of a document's resolved references at once, distinguished by where each is cited from: the note currently open, somewhere else in the project, or nowhere yet. Showing only the mark just opened hides what a reader most wants while reading — which passages they have already used, which came from another note, and which they registered but never cited. A key names the colours, each mark carries a tooltip naming its citing notes, and clicking one selects it; colour is never the only carrier of the distinction.
+
+Which notes cite a reference is derived by reading the Markdown, not stored, because the files are the truth and any stored index goes stale the moment a note is edited outside the application. Citations inside fenced or inline code are ignored: a note documenting the citation syntax is showing an example, not citing it — the welcome note ships with exactly such an example.
+
+A page-only citation has no rectangles and so draws no mark; the panel says the passage was not matched rather than highlighting an arbitrary region.
 
 Changing the imported PDF creates a new document version/identity rather than silently moving old references to different bytes. Deleting or relocating a source must produce a recoverable missing-source state.
 
@@ -263,6 +271,8 @@ The database stores application state; it is not the sole home of notes or sourc
 These are implementation proposals. CodeMirror is an editor foundation; the specified live-preview behavior is custom work and must be prototyped, not assumed to come out of the box. PDF extraction and PDF.js use different geometry representations: include a conversion layer and fixtures for rotation/crop behavior.
 
 Two constraints found while building that layer, recorded because neither is apparent from the libraries' documentation. First, pdfplumber applies a page's `/Rotate` to character coordinates but reports `page.cropbox` under a different convention, and the two disagree at 180° and 270°; the visible box must therefore be derived from the raw media and crop boxes and rotated explicitly, not read back from pdfplumber. Second, reading order cannot be recovered from geometry alone — a page that displays upside down yields text in reverse — so line membership is geometric while the order of glyphs within a line, and of the lines themselves, comes from PDF content-stream order. The rotation fixtures required by A6 should cover all four angles with an asymmetric crop box, since a symmetric one cannot distinguish a correct transform from a mirrored one.
+
+The continuous view renders only the pages near the viewport, keeping correctly-sized placeholders for the rest, so the scrollbar stays honest and memory stays bounded on a long document. Two things to get right: the page indicator must be measured from element rectangles rather than an `IntersectionObserver`'s `intersectionRatio`, because the generous `rootMargin` used to pre-render nearby pages inflates that ratio to 1 for every page near the viewport; and the default zoom should fit the panel width, since a letter page at 100% is wider than a side panel and would clip both the text and its highlights.
 
 FastAPI supports serving bundled static files ([documentation](https://fastapi.tiangolo.com/tutorial/static-files/)). PDF.js supplies browser PDF parsing and rendering ([project](https://mozilla.github.io/pdf.js/)). pdfplumber exposes extracted text and character-level geometry ([documentation](https://github.com/jsvine/pdfplumber)). Use these components rather than implementing a PDF engine. CodeMirror's browser view component is maintained in its [official repository](https://github.com/codemirror/view).
 

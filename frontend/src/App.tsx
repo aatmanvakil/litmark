@@ -23,7 +23,7 @@ import {
 import { Chat } from './chat/Chat'
 import { MarkdownEditor } from './editor/MarkdownEditor'
 import { EventStream, type ServerEvent } from './events'
-import { PdfViewer, type PdfSelection } from './pdf/PdfViewer'
+import { PdfViewer, type PdfMark, type PdfSelection } from './pdf/PdfViewer'
 import { Sidebar } from './Sidebar'
 
 type MainTarget =
@@ -54,6 +54,10 @@ export function App() {
   const [gotoPage, setGotoPage] = useState<number | null>(null)
   const [pdfSelection, setPdfSelection] = useState<PdfSelection | null>(null)
   const [insertNotice, setInsertNotice] = useState<string | null>(null)
+  // Every reference in the open document, so the viewer can show all marks
+  // and colour them by where they are cited from.
+  const [documentReferences, setDocumentReferences] = useState<ReferenceRecord[]>([])
+  const [gotoNonce, setGotoNonce] = useState(0)
 
   const [conversation, setConversation] = useState<Conversation | null>(null)
   const [context, setContext] = useState<MessageContext>({})
@@ -155,6 +159,28 @@ export function App() {
     }
   }, [events])
 
+  const reloadReferences = useCallback(async (): Promise<void> => {
+    if (!openDocument) {
+      setDocumentReferences([])
+      return
+    }
+    try {
+      const payload = await api.listReferences(openDocument.document_id)
+      setDocumentReferences(payload.references)
+    } catch {
+      setDocumentReferences([])
+    }
+  }, [openDocument?.document_id])
+
+  useEffect(() => {
+    void reloadReferences()
+  }, [reloadReferences])
+
+  // Citing notes change as the user types, so refresh when the buffer is saved.
+  useEffect(() => {
+    if (buffer?.revision) void reloadReferences()
+  }, [buffer?.revision, reloadReferences])
+
   const reloadBuffer = useCallback(async (): Promise<void> => {
     if (target.kind === 'note') {
       const note = await api.readNote(target.noteId)
@@ -199,6 +225,7 @@ export function App() {
         const reference = await api.getReference(referenceId)
         setHighlight(reference)
         setGotoPage(reference.page_number)
+        setGotoNonce((value) => value + 1)
         setShowSourcePanel(true)
         if (narrow) setSourceTakesOver(true)
         setContext((current) => ({
@@ -300,6 +327,8 @@ export function App() {
       if (!document) return
       setOpenDocument(document)
       setHighlight(null)
+      setGotoPage(1)
+      setGotoNonce((value) => value + 1)
       setShowSourcePanel(true)
       if (narrow) setSourceTakesOver(true)
       setContext((current) => ({
@@ -314,6 +343,7 @@ export function App() {
     async (hit: SearchHit): Promise<void> => {
       openDocumentById(hit.document_id)
       setGotoPage(hit.page_number)
+      setGotoNonce((value) => value + 1)
       setHighlight(null)
     },
     [openDocumentById],
@@ -337,6 +367,38 @@ export function App() {
   )
 
   // ---------------------------------------------------------------- render
+
+  const marks = useMemo<PdfMark[]>(() => {
+    const currentNoteId = target.kind === 'note' ? target.noteId : null
+    return documentReferences
+      .filter((reference) => (reference.rects?.length ?? 0) > 0)
+      .map((reference) => {
+        const citedBy = reference.cited_by ?? []
+        const inCurrentNote = citedBy.some(
+          (citation) => citation.kind === 'note' && citation.id === currentNoteId,
+        )
+        const tone: PdfMark['tone'] =
+          reference.reference_id === highlight?.reference_id
+            ? 'active'
+            : inCurrentNote
+              ? 'current-note'
+              : citedBy.length > 0
+                ? 'other-note'
+                : 'uncited'
+        const where =
+          citedBy.length === 0
+            ? 'not cited in any note yet'
+            : citedBy.map((citation) => citation.title).join(', ')
+        const quote = reference.quote ? `“${reference.quote.slice(0, 90)}” — ` : ''
+        return {
+          referenceId: reference.reference_id,
+          pageNumber: reference.page_number,
+          rects: reference.rects ?? [],
+          tone,
+          label: `${quote}${where} (${reference.reference_id})`,
+        }
+      })
+  }, [documentReferences, target, highlight?.reference_id])
 
   const docKey = useMemo(() => {
     if (target.kind === 'note') return `note:${target.noteId}`
@@ -516,9 +578,16 @@ export function App() {
             )}
             <PdfViewer
               document={openDocument}
-              highlight={highlight}
+              marks={marks}
               gotoPage={gotoPage}
+              gotoNonce={gotoNonce}
               onSelection={setPdfSelection}
+              onActivateMark={(referenceId) => {
+                const reference = documentReferences.find(
+                  (item) => item.reference_id === referenceId,
+                )
+                if (reference) setHighlight(reference)
+              }}
               onClose={() => {
                 setOpenDocument(null)
                 setSourceTakesOver(false)

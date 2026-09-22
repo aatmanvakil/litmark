@@ -467,6 +467,17 @@ editor — the file on disk is always the authoritative copy.
 2. Open a document to read it, and select a passage to insert a reference.
 3. Ask the chat agent to summarize or compare papers and write the result here.
 
-A citation looks like an ordinary Markdown link: `[Assumption 2, p. 12](source:ref-001)`.
-Cmd/Ctrl-click one to open the cited page with its passage highlighted.
+A citation is an ordinary Markdown link whose destination names a registered
+reference:
+
+```markdown
+The identification argument relies on a mobility restriction.
+[Assumption 2, p. 12](source:ref-001)
+```
+
+Shown as code on purpose: a live example link would point at whichever
+reference happens to be allocated `ref-001`, which is not this one. Real
+citations are created for you when you insert a reference from a PDF selection,
+or when the agent resolves a quotation. Click one and choose "Open source" — or
+Cmd/Ctrl-click it — to open the cited page with its passage highlighted.
 """

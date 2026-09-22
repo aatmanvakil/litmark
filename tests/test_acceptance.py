@@ -747,3 +747,132 @@ def test_revision_is_the_content_hash(services):
         note.note_id, "hello again\n", expected_revision=note.revision
     )
     assert saved.revision == revision_of("hello again\n")
+
+
+# ---------------------------------------------- all marks in a document
+
+
+def test_references_report_where_they_are_cited(client, services, paper_one):
+    """The source panel colours marks by origin, so it needs the citing notes."""
+    document_id = upload(client, "p.pdf", paper_one)["imported"][0]["document"]["document_id"]
+    wait_for_extraction(client, document_id)
+
+    cited = services.tools.resolve_source(
+        document_id=document_id,
+        page_number=1,
+        quote="Identification relies on a mobility restriction",
+    )
+    elsewhere = services.tools.resolve_source(
+        document_id=document_id,
+        page_number=2,
+        quote="Table 1 reports the baseline estimates.",
+    )
+    orphan = services.tools.resolve_source(
+        document_id=document_id,
+        page_number=2,
+        quote="orthogonal to the timing of the reform.",
+    )
+    assert all(r["status"] == "resolved" for r in (cited, elsewhere, orphan))
+
+    mine = client.post("/api/notes", json={"title": "Mine"}).json()
+    client.put(
+        f"/api/notes/{mine['note_id']}",
+        json={
+            "text": f"# Mine\n\nA claim [p. 1](source:{cited['reference_id']}).\n",
+            "expected_revision": mine["revision"],
+        },
+    )
+    theirs = client.post("/api/notes", json={"title": "Theirs"}).json()
+    client.put(
+        f"/api/notes/{theirs['note_id']}",
+        json={
+            "text": f"# Theirs\n\nAnother [p. 2](source:{elsewhere['reference_id']}).\n",
+            "expected_revision": theirs["revision"],
+        },
+    )
+
+    payload = client.get(f"/api/references?document_id={document_id}").json()["references"]
+    by_id = {item["reference_id"]: item for item in payload}
+
+    assert [item["reference_id"] for item in payload] == sorted(
+        by_id, key=lambda ref: (by_id[ref]["page_number"], ref)
+    ), "references should arrive ordered by page"
+
+    citing = {
+        reference_id: {entry["id"] for entry in item["cited_by"]}
+        for reference_id, item in by_id.items()
+    }
+    assert citing[cited["reference_id"]] == {mine["note_id"]}
+    assert citing[elsewhere["reference_id"]] == {theirs["note_id"]}
+    assert citing[orphan["reference_id"]] == set(), "an uncited reference cites nobody"
+
+    # Every mark carries the geometry the overlay needs.
+    for item in payload:
+        assert item["rects"], item
+        assert item["coordinate_space"] == "displayed-cropbox-normalized-top-left"
+
+
+def test_reference_listing_is_scoped_to_one_document(client, services, paper_one, paper_two):
+    first = upload(client, "one.pdf", paper_one)["imported"][0]["document"]["document_id"]
+    second = upload(client, "two.pdf", paper_two)["imported"][0]["document"]["document_id"]
+    for document_id in (first, second):
+        wait_for_extraction(client, document_id)
+
+    services.tools.resolve_source(
+        document_id=first, page_number=1, quote="restriction that varies across regions."
+    )
+    services.tools.resolve_source(
+        document_id=second, page_number=1, quote="Our identification assumes no mobility"
+    )
+
+    scoped = client.get(f"/api/references?document_id={first}").json()["references"]
+    assert scoped and all(item["document_id"] == first for item in scoped)
+
+    everything = client.get("/api/references").json()["references"]
+    assert {item["document_id"] for item in everything} == {first, second}
+    assert len(everything) > len(scoped), "the unscoped listing spans both documents"
+
+
+def test_a_summary_counts_as_citing_a_reference(client, services, paper_one):
+    """A mark cited only by a summary is 'elsewhere', not 'uncited'."""
+    document_id = upload(client, "p.pdf", paper_one)["imported"][0]["document"]["document_id"]
+    wait_for_extraction(client, document_id)
+    run_until_idle(services)
+
+    summary = client.get(f"/api/documents/{document_id}/summary").json()
+    assert summary["text"], "the fake backend should have written a cited summary"
+
+    references = client.get(f"/api/references?document_id={document_id}").json()["references"]
+    cited_by_summary = [
+        item
+        for item in references
+        if any(entry["kind"] == "summary" for entry in item["cited_by"])
+    ]
+    assert cited_by_summary, "the summary's citations should be reported"
+    entry = next(
+        citation
+        for citation in cited_by_summary[0]["cited_by"]
+        if citation["kind"] == "summary"
+    )
+    assert entry["id"] == document_id
+    assert entry["title"].startswith("Summary —")
+
+
+def test_citations_inside_code_blocks_are_not_citations(services):
+    """A worked example in a fenced block documents the syntax; it cites nothing."""
+    from research_workspace.references import source_ids_in_markdown
+
+    text = (
+        "# Guide\n\n"
+        "A real citation [here](source:ref-001).\n\n"
+        "```markdown\n"
+        "[Assumption 2, p. 12](source:ref-999)\n"
+        "```\n\n"
+        "And inline `[x](source:ref-998)` too.\n"
+    )
+    assert source_ids_in_markdown(text) == {"ref-001"}
+
+    # The shipped welcome note documents the syntax and must cite nothing.
+    welcome = services.workspace.read_note("welcome").text
+    assert "source:ref-001" in welcome, "the example should still be visible"
+    assert source_ids_in_markdown(welcome) == set()

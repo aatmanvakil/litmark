@@ -144,7 +144,7 @@ describeOrSkip('the application in Firefox', () => {
 
     const highlights = await waitFor(
       client,
-      `(() => {
+      `return (() => {
          const nodes = [...document.querySelectorAll('.pdf-highlight')]
          return nodes.length
            ? nodes.map((n) => ({
@@ -164,6 +164,115 @@ describeOrSkip('the application in Firefox', () => {
         `highlight outside the page: ${JSON.stringify(rect)}`,
       )
     }
+  })
+
+  test('the document scrolls continuously, rendering pages lazily', async () => {
+    const layout = await script(
+      client,
+      `return (() => {
+         const scroll = document.querySelector('.pdf-scroll')
+         const pages = [...document.querySelectorAll('.pdf-page')]
+         return {
+           pages: pages.length,
+           drawn: pages.filter((p) => {
+             const c = p.querySelector('canvas')
+             return c && c.width > 0
+           }).length,
+           scrollHeight: scroll.scrollHeight,
+           clientHeight: scroll.clientHeight,
+           numbered: pages.map((p) => Number(p.dataset.page)),
+         }
+       })()`,
+    )
+    assert.ok(layout.pages > 1, 'only one page was laid out; the view is not continuous')
+    assert.deepEqual(
+      layout.numbered,
+      Array.from({ length: layout.pages }, (_unused, index) => index + 1),
+      'pages are not laid out in order',
+    )
+    assert.ok(
+      layout.scrollHeight > layout.clientHeight,
+      'the page stack does not exceed the viewport, so nothing can scroll',
+    )
+    assert.ok(layout.drawn >= 1, 'no page was rasterised')
+  })
+
+  test('scrolling updates the page indicator', async () => {
+    const target = await script(
+      client,
+      `return (() => {
+         const page = [...document.querySelectorAll('.pdf-page')].find(
+           (n) => n.dataset.page === '2',
+         )
+         if (!page) return null
+         page.scrollIntoView({ block: 'start' })
+         return 2
+       })()`,
+    )
+    if (target === null) return // single-page fixture
+
+    // The indicator is measured from element rectangles, not the observer's
+    // ratio, which a generous rootMargin would inflate to 1 for every page.
+    await waitFor(client, `document.querySelector('.pdf-controls input')?.value === '2'`, {
+      timeoutMs: 8000,
+      label: 'the page indicator to follow the scroll',
+    })
+  })
+
+  test('every mark in the document is shown, coloured by where it is cited', async () => {
+    const tones = await script(
+      client,
+      `return (() => {
+         const out = {}
+         for (const node of document.querySelectorAll('.pdf-highlight')) {
+           const tone = node.dataset.tone
+           out[tone] = (out[tone] ?? 0) + 1
+         }
+         return out
+       })()`,
+    )
+    const total = Object.values(tones).reduce((sum, n) => sum + n, 0)
+    assert.ok(total > 1, `expected marks beyond the active one, saw ${JSON.stringify(tones)}`)
+
+    // Marks from more than one origin must be distinguishable.
+    const distinct = Object.keys(tones).filter((tone) => tones[tone] > 0)
+    assert.ok(distinct.length >= 2, `only one kind of mark is drawn: ${distinct.join(', ')}`)
+
+    const legend = await script(
+      client,
+      `return [...document.querySelectorAll('.pdf-legend .key')].map((n) => n.textContent.trim())`,
+    )
+    assert.ok(legend.length >= 2, `the key does not explain the colours: ${legend.join(' | ')}`)
+
+    // The colours must actually differ, not merely carry different classes.
+    const colours = await script(
+      client,
+      `return (() => {
+         const seen = {}
+         for (const node of document.querySelectorAll('.pdf-highlight')) {
+           seen[node.dataset.tone] = getComputedStyle(node).backgroundColor
+         }
+         return seen
+       })()`,
+    )
+    const values = Object.values(colours)
+    assert.equal(
+      new Set(values).size,
+      values.length,
+      `two mark kinds render identically: ${JSON.stringify(colours)}`,
+    )
+  })
+
+  test('a mark carries a tooltip naming where it is cited', async () => {
+    const titles = await script(
+      client,
+      `return [...document.querySelectorAll('.pdf-highlight')].map((n) => n.title).filter(Boolean)`,
+    )
+    assert.ok(titles.length > 0, 'marks carry no tooltip')
+    assert.ok(
+      titles.some((title) => /ref-/.test(title)),
+      `tooltips do not name the reference: ${titles[0]}`,
+    )
   })
 
   test('A6: the highlight stays on the passage across zoom levels', async () => {
@@ -186,7 +295,7 @@ describeOrSkip('the application in Firefox', () => {
     await click(client, '.pdf-controls button[title="Zoom in"]')
     await waitFor(
       client,
-      `(() => {
+      `return (() => {
          const c = document.querySelector('.pdf canvas')
          return c && parseFloat(c.style.width) > ${before.pageWidth + 1}
        })()`,

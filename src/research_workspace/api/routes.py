@@ -18,7 +18,15 @@ from ..agent.tools import dispatch
 from ..documents import QUEUED
 from ..errors import InvalidInput, NotFound, RevisionConflict
 from ..events import format_sse
-from ..references import PAGE_ONLY, RESOLVED, Reference, find_page, locate_quote, rects_for_range
+from ..references import (
+    PAGE_ONLY,
+    RESOLVED,
+    Reference,
+    citations_by_reference,
+    find_page,
+    locate_quote,
+    rects_for_range,
+)
 from ..services import Services
 from ..workspace import revision_of, utcnow
 
@@ -336,11 +344,24 @@ def build_router() -> APIRouter:
     # ----------------------------------------------------------- references
 
     @router.get("/references")
-    async def list_references(request: Request) -> dict[str, Any]:
-        registry = services_of(request).references.all()
-        return {
-            "references": [reference.api_json() for reference in registry.values()],
-        }
+    async def list_references(
+        request: Request, document_id: str | None = None
+    ) -> dict[str, Any]:
+        """Every reference, with where each one is cited from.
+
+        The source panel draws all of a document's marks at once and colours
+        them by origin, so it needs the citing notes alongside the geometry.
+        """
+        services = services_of(request)
+        registry = services.references.all()
+        citations = citations_by_reference(services.workspace, services.documents)
+        references = [
+            {**reference.api_json(), "cited_by": citations.get(reference_id, [])}
+            for reference_id, reference in registry.items()
+            if document_id is None or reference.document_id == document_id
+        ]
+        references.sort(key=lambda item: (item["page_number"], item["reference_id"]))
+        return {"references": references}
 
     @router.get("/references/{reference_id}")
     async def get_reference(request: Request, reference_id: str) -> dict[str, Any]:

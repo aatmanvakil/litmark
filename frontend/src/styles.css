@@ -14,6 +14,11 @@
   --warn: #8a6d1f;
   --danger: #a33a2b;
   --code-bg: #f4f1ea;
+  --mark-active: rgba(226, 150, 40, 0.55);
+  --mark-active-line: rgba(180, 105, 20, 0.9);
+  --mark-current: rgba(226, 178, 84, 0.38);
+  --mark-other: rgba(108, 152, 214, 0.32);
+  --mark-uncited: rgba(140, 140, 140, 0.26);
   --highlight: rgba(226, 178, 84, 0.42);
   --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -35,6 +40,11 @@
     --warn: #d7b866;
     --danger: #e08874;
     --code-bg: #232120;
+    --mark-active: rgba(232, 176, 96, 0.5);
+    --mark-active-line: rgba(245, 200, 130, 0.95);
+    --mark-current: rgba(217, 168, 106, 0.3);
+    --mark-other: rgba(120, 168, 232, 0.3);
+    --mark-uncited: rgba(160, 160, 160, 0.22);
     --highlight: rgba(217, 168, 106, 0.32);
     --shadow: none;
   }
@@ -705,9 +715,12 @@ select {
   min-height: 0;
   overflow: auto;
   padding: 0.7rem;
+  /* Pages stack vertically so the document scrolls continuously. */
   display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  scroll-padding-top: 0.7rem;
   background: color-mix(in srgb, var(--ink) 6%, var(--bg));
 }
 
@@ -716,6 +729,18 @@ select {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
   background: #fff;
   line-height: 0;
+  flex: none;
+}
+
+/* A page not yet rasterised keeps its size, so the scrollbar stays honest. */
+.pdf-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .pdf-overlay {
@@ -726,9 +751,79 @@ select {
 
 .pdf-highlight {
   position: absolute;
-  background: var(--highlight);
   border-radius: 2px;
   mix-blend-mode: multiply;
+  pointer-events: auto;
+  cursor: pointer;
+  background: var(--mark-uncited);
+  transition: background 120ms ease;
+}
+
+/* The reference just opened: the one the reader asked to see. */
+.pdf-highlight.active {
+  background: var(--mark-active);
+  box-shadow: inset 0 0 0 1px var(--mark-active-line);
+}
+
+/* Cited by the note currently being edited. */
+.pdf-highlight.current-note {
+  background: var(--mark-current);
+}
+
+/* Cited somewhere else — another note, or a document summary. */
+.pdf-highlight.other-note {
+  background: var(--mark-other);
+}
+
+/* Registered but not cited by anything yet. */
+.pdf-highlight.uncited {
+  background: var(--mark-uncited);
+}
+
+.pdf-highlight:hover {
+  filter: saturate(1.4) brightness(0.95);
+}
+
+@media (prefers-color-scheme: dark) {
+  .pdf-highlight {
+    mix-blend-mode: normal;
+  }
+}
+
+.pdf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.78rem;
+  color: var(--muted-strong);
+}
+
+.pdf-legend .key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.pdf-legend .key i {
+  width: 0.85rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.pdf-legend .current-note i {
+  background: var(--mark-current);
+  box-shadow: inset 0 0 0 1px var(--mark-active-line);
+}
+
+.pdf-legend .other-note i {
+  background: var(--mark-other);
+}
+
+.pdf-legend .uncited i {
+  background: var(--mark-uncited);
 }
 
 .pdf-text-layer {

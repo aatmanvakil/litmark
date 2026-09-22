@@ -368,6 +368,81 @@ def find_page(extraction: DocumentExtraction, page_number: int) -> PageExtractio
     )
 
 
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})", re.MULTILINE)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def strip_code(text: str) -> str:
+    """Blank out fenced and inline code, preserving offsets.
+
+    A note that documents the citation syntax in a code block must not be
+    treated as citing whatever reference the example names — that would colour
+    a mark as "cited here" on the strength of a worked example, and the
+    welcome note ships with exactly such an example.
+    """
+    out = list(text)
+    fence: str | None = None
+    position = 0
+    for line in text.splitlines(keepends=True):
+        start, end = position, position + len(line)
+        position = end
+        opening = _FENCE_RE.match(line)
+        if fence is None:
+            if opening:
+                fence = opening.group(1)[0] * 3
+                for index in range(start, end):
+                    if out[index] != "\n":
+                        out[index] = " "
+            continue
+        # Inside a fence: blank everything, and close on a matching fence.
+        for index in range(start, end):
+            if out[index] != "\n":
+                out[index] = " "
+        if opening and opening.group(1)[0] * 3 == fence:
+            fence = None
+    blanked = "".join(out)
+    return _INLINE_CODE_RE.sub(lambda match: " " * len(match.group(0)), blanked)
+
+
 def source_ids_in_markdown(text: str) -> set[str]:
-    """Reference IDs cited by ``source:`` links in a Markdown document."""
-    return set(_SOURCE_LINK_RE.findall(text))
+    """Reference IDs cited by ``source:`` links in a Markdown document.
+
+    Links inside code are ignored: they are documentation, not citations.
+    """
+    return set(_SOURCE_LINK_RE.findall(strip_code(text)))
+
+
+def citations_by_reference(
+    workspace: Workspace, documents: Any
+) -> dict[str, list[dict[str, str]]]:
+    """Which notes and summaries cite each reference.
+
+    The source panel shows every mark in a document at once, and colours them
+    by where they are cited from — the note being edited, somewhere else, or
+    nowhere yet. That distinction is only knowable by reading the Markdown, so
+    it is computed here rather than stored: the files are the truth, and a
+    stored index would go stale the moment someone edits a note by hand.
+    """
+    citations: dict[str, list[dict[str, str]]] = {}
+
+    def record(reference_id: str, entry: dict[str, str]) -> None:
+        citations.setdefault(reference_id, []).append(entry)
+
+    for note in workspace.list_notes():
+        for reference_id in source_ids_in_markdown(note.text):
+            record(reference_id, {"kind": "note", "id": note.note_id, "title": note.title})
+
+    for document in documents.list():
+        text = documents.summary_text(document.document_id)
+        if not text:
+            continue
+        for reference_id in source_ids_in_markdown(text):
+            record(
+                reference_id,
+                {
+                    "kind": "summary",
+                    "id": document.document_id,
+                    "title": f"Summary — {document.display_title}",
+                },
+            )
+    return citations
