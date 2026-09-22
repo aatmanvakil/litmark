@@ -459,6 +459,22 @@ select {
   background: var(--accent-soft);
 }
 
+.editor-actions {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.toggle.open-source:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .editor-surface {
   flex: 1;
   min-height: 0;

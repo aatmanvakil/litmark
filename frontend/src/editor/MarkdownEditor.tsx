@@ -21,7 +21,7 @@ import {
 import { useEffect, useRef, useState } from 'preact/hooks'
 
 import { ApiError } from '../api'
-import { livePreview, setSourceMode } from './livePreview'
+import { livePreview, setSourceMode, sourceReferenceAt } from './livePreview'
 
 export type SaveState =
   | { kind: 'clean' }
@@ -55,6 +55,9 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
   const saving = useRef(false)
   const [state, setState] = useState<SaveState>({ kind: 'clean' })
   const [showSource, setShowSource] = useState(false)
+  // The citation the cursor is inside, if any. Drives the visible
+  // "Open source" action, so the Cmd/Ctrl-click shortcut is not the only way in.
+  const [sourceAtCursor, setSourceAtCursor] = useState<string | null>(null)
 
   // Keep a stable reference to the latest props for use inside CodeMirror.
   const latest = useRef(props)
@@ -135,11 +138,14 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
           latest.current.onDirtyChange?.(true)
           schedule()
         }
-        if (update.selectionSet && latest.current.onSelectionChange) {
-          const { from, to } = update.state.selection.main
-          latest.current.onSelectionChange(
-            from === to ? '' : update.state.doc.sliceString(from, to),
-          )
+        if (update.selectionSet || update.docChanged) {
+          const { from, to, head } = update.state.selection.main
+          if (latest.current.onSelectionChange) {
+            latest.current.onSelectionChange(
+              from === to ? '' : update.state.doc.sliceString(from, to),
+            )
+          }
+          setSourceAtCursor(sourceReferenceAt(update.state, head))
         }
       }),
       EditorView.editable.of(!props.readOnly),
@@ -232,6 +238,22 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
       <div class="editor-bar">
         <SaveIndicator state={state} />
         <div class="editor-actions">
+          <button
+            type="button"
+            class="toggle open-source"
+            data-action="open-source"
+            disabled={sourceAtCursor === null}
+            onClick={() => {
+              if (sourceAtCursor) latest.current.onOpenSource?.(sourceAtCursor)
+            }}
+            title={
+              sourceAtCursor
+                ? `Open ${sourceAtCursor} — the cited page, with the passage highlighted`
+                : 'Put the cursor in a citation to open its source (or Cmd/Ctrl-click it)'
+            }
+          >
+            {sourceAtCursor ? `Open source · ${sourceAtCursor}` : 'Open source'}
+          </button>
           <button
             type="button"
             class={showSource ? 'toggle active' : 'toggle'}

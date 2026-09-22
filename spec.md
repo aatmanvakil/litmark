@@ -44,7 +44,9 @@ research-workspace doctor
 
 Document virtual-environment installation, plus optional `pipx` or `uv tool` instructions. `doctor` checks the workspace, optional agent dependency, required runtime availability, and authentication configuration without printing secrets. Provider credentials and any provider billing remain separate from installing this application; do not promise that a consumer chat subscription supplies SDK access.
 
-`serve` binds to `127.0.0.1`, accepts a port argument, prints the local URL, and optionally opens the browser. One server process serves one project. An existing project can be reopened without initialization or migration-induced data loss. Initialization must never overwrite existing material.
+`serve` binds to `127.0.0.1` by default, accepts a port argument, prints the local URL, and optionally opens the browser. One server process serves one project. An existing project can be reopened without initialization or migration-induced data loss. Initialization must never overwrite existing material.
+
+`serve` also accepts `--host` to bind another interface and `--allow-host` to name hostnames accepted in the `Host` header. This exists because loopback binding plus strict host validation makes the application unreachable behind a reverse proxy or an editor port-forward, which is a common way to use a remote workstation: the proxy's hostname is what arrives in the header, so every request is refused. Binding beyond loopback without naming a host widens host checking automatically, since the process cannot know the proxy's public name. The session credential remains the access control in all cases, and an SSH tunnel remains the recommended route on an untrusted network.
 
 The core reader/editor works without an agent account. Import and extraction still work; automatic summaries wait until an agent is configured. Show this state clearly.
 
@@ -149,7 +151,9 @@ Rectangles use `[x0, y0, x1, y1]` in `[0,1]`, relative to the visible page after
 
 ### Two ways to create a reference
 
-**Human selection:** select text on a single PDF page, then choose “Insert reference” or “Insert quotation and reference.” Store the quotation and selection geometry and insert the link at the last editor position. Multi-page selection is outside v0.1.
+**Human selection:** select text on a single PDF page, then choose “Insert reference” or “Insert quotation and reference.” Insert the link at the last editor position. Multi-page selection is outside v0.1.
+
+The browser sends the selected text with its surrounding context and the server locates it through the same resolver the agent uses, rather than storing geometry measured in the viewer. This keeps one source of truth for coordinates and means a human selection that cannot be matched uniquely reports `ambiguous` or `not_found` exactly as an agent's would, instead of silently recording a rectangle the extraction layer disagrees with.
 
 **Agent selection:** the agent calls a source resolver with document ID, page number, exact quotation, and optional surrounding text. The resolver locates the text and computes geometry. Agents do not invent coordinates or allocate their own unregistered reference IDs.
 
@@ -201,8 +205,12 @@ Provide project tools with explicit schemas:
 | `read_note` | Markdown text and current revision/hash. |
 | `resolve_source` | A registered reference ID or an explicit matching failure. |
 | `write_note` / `patch_note` | A version-checked edit with a persisted change record. |
+| `read_summary` / `write_summary` | A document summary and its revision; writes are version-checked like notes. |
+| `list_notes` | Note IDs, titles, and revisions. |
 
-Use the agent runtime's tool loop; avoid terminal screen scraping. Configure its available tools explicitly. Any direct file editing must go through staging and the versioned commit mechanism below. Disable unrestricted shell and unrelated host tools in the initial research mode; running arbitrary analysis code can be added as a separately scoped capability.
+`read_summary` and `write_summary` are not optional extras: §5 requires the agent to generate and revise summaries under the same version checks as notes, which it cannot do through the note tools alone. `list_notes` lets the agent find a note the user referred to by name rather than by ID.
+
+Use the agent runtime's tool loop; avoid terminal screen scraping. Configure its available tools explicitly — with the Claude Agent SDK this means the `tools` allowlist, not only `allowed_tools`/`disallowed_tools`, which still let the runtime load its own built-ins such as tool search. Any direct file editing must go through staging and the versioned commit mechanism below. Disable unrestricted shell and unrelated host tools in the initial research mode; running arbitrary analysis code can be added as a separately scoped capability.
 
 ## 8. Human and agent editing
 
@@ -252,6 +260,8 @@ The database stores application state; it is not the sole home of notes or sourc
 | Packaging | `pyproject.toml`, console entry point, wheel and source distribution containing compiled frontend assets. |
 
 These are implementation proposals. CodeMirror is an editor foundation; the specified live-preview behavior is custom work and must be prototyped, not assumed to come out of the box. PDF extraction and PDF.js use different geometry representations: include a conversion layer and fixtures for rotation/crop behavior.
+
+Two constraints found while building that layer, recorded because neither is apparent from the libraries' documentation. First, pdfplumber applies a page's `/Rotate` to character coordinates but reports `page.cropbox` under a different convention, and the two disagree at 180° and 270°; the visible box must therefore be derived from the raw media and crop boxes and rotated explicitly, not read back from pdfplumber. Second, reading order cannot be recovered from geometry alone — a page that displays upside down yields text in reverse — so line membership is geometric while the order of glyphs within a line, and of the lines themselves, comes from PDF content-stream order. The rotation fixtures required by A6 should cover all four angles with an asymmetric crop box, since a symmetric one cannot distinguish a correct transform from a mirrored one.
 
 FastAPI supports serving bundled static files ([documentation](https://fastapi.tiangolo.com/tutorial/static-files/)). PDF.js supplies browser PDF parsing and rendering ([project](https://mozilla.github.io/pdf.js/)). pdfplumber exposes extracted text and character-level geometry ([documentation](https://github.com/jsvine/pdfplumber)). Use these components rather than implementing a PDF engine. CodeMirror's browser view component is maintained in its [official repository](https://github.com/codemirror/view).
 

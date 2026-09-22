@@ -13,8 +13,10 @@
  */
 
 import { syntaxTree } from '@codemirror/language'
+import type { SyntaxNode } from '@lezer/common'
 import {
   EditorSelection,
+  type EditorState,
   Range,
   StateEffect,
   StateField,
@@ -49,6 +51,31 @@ export interface LivePreviewOptions {
   onOpenLink?: (href: string) => void
 }
 
+/**
+ * The `source:` reference the cursor sits in, if any.
+ *
+ * Cmd/Ctrl-click is a shortcut, not the only way in: the editor toolbar uses
+ * this to offer a visible "Open source" action, which is what a reader who
+ * never learns the shortcut will actually find.
+ */
+export function sourceReferenceAt(state: EditorState, position: number): string | null {
+  const tree = syntaxTree(state)
+  for (const bias of [-1, 1] as const) {
+    let node: SyntaxNode | null = tree.resolveInner(position, bias)
+    while (node) {
+      if (node.name === 'Link') {
+        const url = node.getChild('URL')
+        if (url) {
+          const href = state.doc.sliceString(url.from, url.to)
+          if (href.startsWith('source:')) return href.slice('source:'.length)
+        }
+      }
+      node = node.parent
+    }
+  }
+  return null
+}
+
 // ------------------------------------------------------------------ widgets
 
 class LinkWidget extends WidgetType {
@@ -80,8 +107,9 @@ class LinkWidget extends WidgetType {
       if (isSource) this.options.onOpenSource?.(this.href.slice('source:'.length))
       else this.options.onOpenLink?.(this.href)
     }
-    // Cmd/Ctrl-click opens the source; a plain click leaves the cursor alone so
-    // the underlying text stays editable.
+    // Cmd/Ctrl-click opens the source. A plain click falls through to the
+    // editor, which places the cursor inside the link — that both reveals the
+    // Markdown syntax for editing and enables the toolbar's "Open source".
     anchor.addEventListener('mousedown', (event) => {
       if (event.metaKey || event.ctrlKey) open(event)
     })
