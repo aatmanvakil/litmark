@@ -1,8 +1,16 @@
 """The FastAPI application: local boundaries, static assets, and routes.
 
-Boundaries enforced here (see spec §10): loopback binding is the caller's job,
-but host/origin validation and the per-process session credential live in this
-module, so an unrelated website cannot command the server.
+Boundaries enforced here (see spec §10): host/origin validation and the
+per-process session credential, so an unrelated website cannot command the
+server.
+
+Host validation exists to stop DNS rebinding against a loopback server: a
+malicious page resolves its own name to 127.0.0.1 and talks to this process
+from the browser. Checking that the `Host` header is a loopback name defeats
+that. Behind a reverse proxy or a port-forward the header is the *proxy's*
+hostname instead, so the same check would reject every legitimate request —
+which is why non-loopback deployments widen it explicitly. The session
+credential remains the real boundary in both cases.
 """
 
 from __future__ import annotations
@@ -24,7 +32,10 @@ log = logging.getLogger(__name__)
 
 TOKEN_HEADER = "x-research-token"
 TOKEN_QUERY = "token"
-ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1", "0.0.0.0"}
+# Backwards-compatible alias; the effective set is now per-app.
+ALLOWED_HOSTS = LOOPBACK_HOSTS
+ANY_HOST = "*"
 
 
 def static_root() -> Path | None:
@@ -37,7 +48,21 @@ def static_root() -> Path | None:
     return path if (path / "index.html").is_file() else None
 
 
-def create_app(services: Services, *, dev_origin: str | None = None) -> FastAPI:
+def create_app(
+    services: Services,
+    *,
+    dev_origin: str | None = None,
+    allowed_hosts: set[str] | None = None,
+) -> FastAPI:
+    """Build the application.
+
+    ``allowed_hosts`` widens host and origin validation for a reverse proxy or
+    port-forward. Pass ``{"*"}`` to accept any hostname, which is what a proxy
+    whose public name is unknown needs; the session credential still gates the
+    API.
+    """
+    effective_hosts = set(LOOPBACK_HOSTS) | (allowed_hosts or set())
+    accept_any_host = ANY_HOST in effective_hosts
     app = FastAPI(
         title="Research Workspace",
         version="0.1.0",
@@ -70,14 +95,24 @@ def create_app(services: Services, *, dev_origin: str | None = None) -> FastAPI:
     async def guard(
         request: Request, call_next: Callable[[Request], Awaitable[object]]
     ):  # type: ignore[no-untyped-def]
-        host = (request.headers.get("host") or "").rsplit(":", 1)[0]
-        if host and host not in ALLOWED_HOSTS:
+        host = _hostname_of(request.headers.get("host") or "")
+        if host and not accept_any_host and host not in effective_hosts:
             return JSONResponse(
-                {"error": {"code": "bad_host", "message": f"Unexpected Host header: {host!r}."}},
+                {
+                    "error": {
+                        "code": "bad_host",
+                        "message": (
+                            f"Unexpected Host header: {host!r}. This server only "
+                            "accepts loopback hostnames by default. Behind a proxy "
+                            "or port-forward, start it with "
+                            f"`--allow-host {host}` (or `--allow-host '*'`)."
+                        ),
+                    }
+                },
                 status_code=400,
             )
         origin = request.headers.get("origin")
-        if origin and not _origin_allowed(origin, dev_origin):
+        if origin and not _origin_allowed(origin, dev_origin, effective_hosts):
             return JSONResponse(
                 {
                     "error": {
@@ -103,7 +138,7 @@ def create_app(services: Services, *, dev_origin: str | None = None) -> FastAPI:
                 status_code=401,
             )
         response = await call_next(request)
-        if origin and _origin_allowed(origin, dev_origin):
+        if origin and _origin_allowed(origin, dev_origin, effective_hosts):
             response.headers["access-control-allow-origin"] = origin  # type: ignore[attr-defined]
             response.headers["access-control-allow-headers"] = TOKEN_HEADER  # type: ignore[attr-defined]
             response.headers["vary"] = "origin"  # type: ignore[attr-defined]
@@ -168,10 +203,27 @@ def _authorized(request: Request, token: str) -> bool:
     return hmac.compare_digest(supplied, token)
 
 
-def _origin_allowed(origin: str, dev_origin: str | None) -> bool:
+def _hostname_of(header: str) -> str:
+    """The hostname from a Host header, without its port.
+
+    IPv6 literals are bracketed (`[::1]:8765`), so a naive split on the last
+    colon would mangle them.
+    """
+    value = header.strip()
+    if value.startswith("["):
+        closing = value.find("]")
+        return value[: closing + 1] if closing != -1 else value
+    return value.rsplit(":", 1)[0] if ":" in value else value
+
+
+def _origin_allowed(origin: str, dev_origin: str | None, hosts: set[str]) -> bool:
     if dev_origin and origin == dev_origin:
+        return True
+    if ANY_HOST in hosts:
         return True
     from urllib.parse import urlparse
 
     parsed = urlparse(origin)
-    return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    hostname = parsed.hostname or ""
+    # `urlparse` strips the brackets from an IPv6 literal; `hosts` keeps them.
+    return hostname in hosts or f"[{hostname}]" in hosts

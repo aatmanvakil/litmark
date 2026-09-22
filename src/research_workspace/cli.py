@@ -13,7 +13,9 @@ from .errors import WorkspaceError
 from .workspace import Workspace
 
 DEFAULT_PORT = 8765
-HOST = "127.0.0.1"  # Loopback only; remote use goes through an SSH tunnel.
+# Loopback by default; `--host` widens it for a proxy or port-forward, and an
+# SSH tunnel remains the recommended way to reach it from another machine.
+HOST = "127.0.0.1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +36,24 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="Serve an existing project in the browser.")
     serve.add_argument("path", type=Path, nargs="?", default=Path.cwd())
     serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve.add_argument(
+        "--host",
+        default=HOST,
+        help=(
+            "Interface to bind. Defaults to 127.0.0.1. Use 0.0.0.0 to reach the "
+            "server through a reverse proxy or port-forward."
+        ),
+    )
+    serve.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="HOSTNAME",
+        help=(
+            "Accept this hostname in the Host header, for use behind a proxy. "
+            "Repeatable. Pass '*' to accept any hostname."
+        ),
+    )
     serve.add_argument("--open", action="store_true", help="Open a browser window.")
     serve.add_argument("--reload", action="store_true", help="Reload on code changes (dev).")
     serve.add_argument(
@@ -90,13 +110,30 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .services import open_services
 
     services = open_services(args.path, backend_name=args.backend)
-    app = create_app(services, dev_origin=args.dev_origin)
 
-    url = f"http://{HOST}:{args.port}/"
+    allowed_hosts = set(args.allow_host)
+    loopback = args.host in {"127.0.0.1", "localhost", "::1"}
+    if not loopback and not allowed_hosts:
+        # Binding beyond loopback is a deliberate act, usually for a proxy whose
+        # public hostname this process cannot know. Rejecting every Host header
+        # would make that setup fail confusingly, so widen the check and say so.
+        allowed_hosts = {"*"}
+    app = create_app(
+        services, dev_origin=args.dev_origin, allowed_hosts=allowed_hosts
+    )
+
+    display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    url = f"http://{display_host}:{args.port}/"
     availability = services.agent_availability()
 
     print(f"Research Workspace — {services.workspace.root}")
     print(f"  {url}")
+    if not loopback:
+        print(f"  bound to {args.host}:{args.port} — reachable beyond this machine.")
+        print("  the session credential in the served page is the only access control;")
+        print("  prefer an SSH tunnel if the network is not trusted.")
+    if allowed_hosts and allowed_hosts != {"*"}:
+        print(f"  additional accepted hostnames: {', '.join(sorted(allowed_hosts))}")
     if static_root() is None:
         print("  warning: browser assets are not built; run `npm --prefix frontend run build`")
     if availability.ready:
@@ -105,13 +142,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print(f"  agent: not configured — {availability.message}")
         print("  notes and PDFs work regardless; summaries and chat need an agent.")
     print("  Ctrl-C to stop.")
+    # stdout is block-buffered when redirected to a file or a supervisor, which
+    # would otherwise swallow this banner until the process exits.
+    sys.stdout.flush()
 
     if args.open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
     uvicorn.run(
         app,
-        host=HOST,
+        host=args.host,
         port=args.port,
         log_level="debug" if args.verbose else "warning",
         access_log=False,

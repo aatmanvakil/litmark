@@ -39,6 +39,30 @@ research-workspace serve ./my-research --open
 project per process. Reopening an existing project needs no initialization, and
 `init` never overwrites existing material.
 
+### Reaching it through a proxy or port-forward
+
+By default the server binds to loopback *and* rejects any `Host` header that is
+not a loopback name. That second check is what stops a malicious page from
+using DNS rebinding to talk to your local server — but behind a reverse proxy
+or a port-forward the header carries the proxy's hostname, so the check would
+reject every real request. Widen it explicitly:
+
+```bash
+# Bind beyond loopback; any Host header is then accepted.
+research-workspace serve ./my-research --host 0.0.0.0
+
+# Or name the proxy's hostname and keep the check strict.
+research-workspace serve ./my-research --host 0.0.0.0 --allow-host papers.internal
+```
+
+The per-process session credential embedded in the served page remains the
+access control in both cases. On an untrusted network prefer an SSH tunnel,
+which keeps the default loopback binding intact:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 you@the-machine
+```
+
 Check your environment at any time:
 
 ```bash
