@@ -74,6 +74,7 @@ The desired interaction is similar to Obsidian live preview: users type Markdown
 - Moving the cursor away hides formatting delimiters again.
 - Source links appear as readable labels; editing reveals their Markdown syntax.
 - Cmd/Ctrl-click opens a source. Provide a visible “Open source” action for users who do not use the shortcut.
+- A plain click on a rendered citation must put the cursor inside it, revealing its Markdown and enabling the visible action. A rendered citation is an atomic range, so without this a plain click lands beside it and the citation reads as dead — the shortcut then becomes the only way in, which is the failure this bullet exists to prevent.
 - A Source mode shows the complete Markdown text without presentation decorations.
 - Cursor movement, selection, copy/paste, undo, and redo continue to operate on the underlying text.
 
@@ -301,7 +302,7 @@ Deferred: OCR, document URL downloads, Word/HTML ingestion, bibliography/Zotero 
 | ID | Observable pass condition |
 | --- | --- |
 | A1 | Install the built wheel in a clean Python environment without Node; the command serves the complete interface, including the PDF worker. |
-| A2 | Type Markdown headings, emphasis, quotations, links, and math; rendered appearance changes in place, syntax can be edited, and a source-mode toggle preserves the text. |
+| A2 | Type Markdown headings, emphasis, quotations, links, and math; rendered appearance changes in place, syntax can be edited, and a source-mode toggle preserves the text. Checked in a real browser, not only in a DOM shim. |
 | A3 | Import two text PDFs together; reopen the project and find their originals, metadata, and extracted pages. Importing identical bytes does not create an accidental duplicate. |
 | A4 | Generate a short cited summary with a live agent; edit it manually and confirm a later regeneration cannot silently erase the edits. |
 | A5 | Ask the agent to compare the papers and write the result into a note. The saved Markdown contains registered citations that open the intended source pages. |
@@ -314,6 +315,8 @@ Deferred: OCR, document URL downloads, Word/HTML ingestion, bibliography/Zotero 
 | A12 | A malformed, encrypted, or scanned PDF reports its processing limitation and leaves other imports usable. |
 
 Use a small deterministic fixture corpus for geometry, references, and conflicts; use a fake adapter only for reproducible UI/event tests. A release still requires at least one actual provider-backed end-to-end run. Test package installation, not just the development server.
+
+A2 and the zoom half of A6 need a browser driving the built assets; serving the right bytes proves nothing about whether the page runs. Two failures found only that way were a citation that could not be opened by plain click, and an event stream whose response withheld its headers until the first keepalive, so the interface showed “Reconnecting…” on an idle project. Note that headless Chromium cannot reach loopback HTTP under some sandboxes — it returns an empty document where `curl` succeeds — which makes a Chromium-based suite pass vacuously; prefer a browser verified to load the page.
 
 The class demonstration is complete when a student can import two papers, read their summaries, ask for a comparison, have the agent write it into a note, inspect the supporting passages, and refine the Markdown themselves.
 

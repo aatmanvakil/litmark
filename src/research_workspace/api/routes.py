@@ -562,6 +562,11 @@ def build_router() -> APIRouter:
             since = max(since, int(last_event_id))
 
         async def stream():  # type: ignore[no-untyped-def]
+            # Open the response immediately. Without this the headers are not
+            # flushed until the first event, so on a quiet project the browser
+            # sits in EventSource's CONNECTING state — and shows "Reconnecting…"
+            # — until the 15-second keepalive finally arrives.
+            yield ": open\n\nretry: 2000\n\n"
             async for event in services.bus.stream(
                 since=since, conversation_id=conversation_id
             ):

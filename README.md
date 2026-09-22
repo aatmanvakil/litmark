@@ -128,6 +128,24 @@ uv run research-workspace serve ./my-research --reload
 `npm run dev` runs the frontend with hot reload against a server started
 separately on port 8765.
 
+### Tests
+
+```bash
+uv run pytest                     # server and acceptance criteria
+uv run pytest --runslow           # plus: build the wheel, install it clean, serve it
+npm --prefix frontend test        # renderer unit tests, and the bundle run in a DOM
+
+# Real-browser checks (A2 live preview, A6 highlight geometry under zoom).
+# Point it at a project whose open note contains a source: citation.
+research-workspace serve ./my-research &
+RW_BASE_URL=http://127.0.0.1:8765/ npm --prefix frontend run test:browser
+```
+
+The browser suite drives headless Firefox over Marionette. Headless Chromium is
+deliberately not used: under some sandboxes it cannot reach loopback HTTP — it
+returns an empty document where `curl` succeeds — so a Chromium suite passes
+without having checked anything.
+
 ## Scope
 
 v0.1 covers ingestion of text-based PDFs, cited summaries, Markdown live-preview

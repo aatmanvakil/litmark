@@ -378,7 +378,15 @@ export function App() {
   const showMain = !narrow || !sourceTakesOver
 
   return (
-    <div class={`shell${showChat ? '' : ' chat-collapsed'}`}>
+    <div
+      class={[
+        'shell',
+        showChat ? '' : 'chat-collapsed',
+        showSourceRegion ? '' : 'source-hidden',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <header class="topbar">
         <button
           type="button"

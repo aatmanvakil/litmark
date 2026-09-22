@@ -20,6 +20,19 @@ import { api, type DocumentRecord, type ReferenceRecord } from '../api'
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
 const ZOOM_STEPS = [0.6, 0.75, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2, 2.5, 3]
+// Breathing room so the page is not flush against the panel edges.
+const PAGE_MARGIN = 24
+
+/** The zoom step closest to an arbitrary scale, so Fit hands over smoothly. */
+function nearestZoomIndex(scale: number): number {
+  let best = 0
+  for (let index = 1; index < ZOOM_STEPS.length; index += 1) {
+    if (Math.abs(ZOOM_STEPS[index]! - scale) < Math.abs(ZOOM_STEPS[best]! - scale)) {
+      best = index
+    }
+  }
+  return best
+}
 
 export interface PdfSelection {
   documentId: string
@@ -42,9 +55,34 @@ export function PdfViewer(props: PdfViewerProps) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
   const [pageNumber, setPageNumber] = useState(1)
   const [zoomIndex, setZoomIndex] = useState(3)
+  // A letter page at 100% is wider than this panel, which would clip the text
+  // and hide half the highlight. Fitting the width is the useful default; any
+  // manual zoom takes over from there.
+  const [fitWidth, setFitWidth] = useState(true)
+  const [available, setAvailable] = useState<number | null>(null)
+  const [fittedScale, setFittedScale] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState('1')
-  const scale = ZOOM_STEPS[zoomIndex] ?? 1
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const scale = fitWidth ? (fittedScale ?? 1) : (ZOOM_STEPS[zoomIndex] ?? 1)
+
+  // Track the panel width so the fitted scale follows a resized pane.
+  useEffect(() => {
+    const node = scroller.current
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width
+      if (width) setAvailable(width)
+    })
+    observer.observe(node)
+    setAvailable(node.clientWidth)
+    return () => observer.disconnect()
+  }, [pdf])
+
+  const zoomTo = (index: number): void => {
+    setFitWidth(false)
+    setZoomIndex(Math.min(Math.max(0, index), ZOOM_STEPS.length - 1))
+  }
 
   const url = useMemo(() => api.pdfUrl(props.document.document_id), [props.document.document_id])
 
@@ -139,8 +177,8 @@ export function PdfViewer(props: PdfViewerProps) {
         <span class="spacer" />
         <button
           type="button"
-          onClick={() => setZoomIndex(Math.max(0, zoomIndex - 1))}
-          disabled={zoomIndex === 0}
+          onClick={() => zoomTo(nearestZoomIndex(scale) - 1)}
+          disabled={!fitWidth && zoomIndex === 0}
           title="Zoom out"
         >
           −
@@ -148,11 +186,19 @@ export function PdfViewer(props: PdfViewerProps) {
         <span class="muted zoom">{Math.round(scale * 100)}%</span>
         <button
           type="button"
-          onClick={() => setZoomIndex(Math.min(ZOOM_STEPS.length - 1, zoomIndex + 1))}
-          disabled={zoomIndex === ZOOM_STEPS.length - 1}
+          onClick={() => zoomTo(nearestZoomIndex(scale) + 1)}
+          disabled={!fitWidth && zoomIndex === ZOOM_STEPS.length - 1}
           title="Zoom in"
         >
           +
+        </button>
+        <button
+          type="button"
+          class={fitWidth ? 'fit active' : 'fit'}
+          onClick={() => setFitWidth(true)}
+          title="Fit the page to the panel width"
+        >
+          Fit
         </button>
       </div>
 
@@ -183,6 +229,10 @@ export function PdfViewer(props: PdfViewerProps) {
           pdf={pdf}
           pageNumber={pageNumber}
           scale={scale}
+          fitWidth={fitWidth}
+          available={available}
+          onFitted={setFittedScale}
+          scrollerRef={scroller}
           rects={highlightRects}
           documentId={props.document.document_id}
           onSelection={props.onSelection}
@@ -197,6 +247,10 @@ interface PdfPageProps {
   pdf: PDFDocumentProxy
   pageNumber: number
   scale: number
+  fitWidth: boolean
+  available: number | null
+  onFitted: (scale: number) => void
+  scrollerRef: { current: HTMLDivElement | null }
   rects: number[][]
   documentId: string
   onSelection: (selection: PdfSelection | null) => void
@@ -218,7 +272,15 @@ function PdfPage(props: PdfPageProps) {
       // Default rotation: PDF.js applies the page's own /Rotate, and the
       // viewport is sized from the crop box — the same visible box the stored
       // rectangles are normalized against.
-      const viewport = page.getViewport({ scale: props.scale })
+      // When fitting, derive the scale from the unscaled page width so the
+      // page exactly fills the panel; report it back for the zoom readout.
+      let effective = props.scale
+      if (props.fitWidth && props.available) {
+        const base = page.getViewport({ scale: 1 })
+        effective = Math.max(0.1, (props.available - PAGE_MARGIN) / base.width)
+        props.onFitted(effective)
+      }
+      const viewport = page.getViewport({ scale: effective })
       const ratio = window.devicePixelRatio || 1
       const target = canvas.current
       if (!target) return
@@ -255,7 +317,7 @@ function PdfPage(props: PdfPageProps) {
       cancelled = true
       page?.cleanup()
     }
-  }, [props.pdf, props.pageNumber, props.scale])
+  }, [props.pdf, props.pageNumber, props.scale, props.fitWidth, props.available])
 
   const captureSelection = (): void => {
     const selection = window.getSelection()
@@ -285,7 +347,7 @@ function PdfPage(props: PdfPageProps) {
   }
 
   return (
-    <div class="pdf-scroll">
+    <div class="pdf-scroll" ref={props.scrollerRef}>
       <div class="pdf-page" onMouseUp={captureSelection} onTouchEnd={captureSelection}>
         <canvas ref={canvas} />
         <div class="pdf-text-layer" ref={textLayer} />

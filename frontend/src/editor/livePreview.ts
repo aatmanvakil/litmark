@@ -82,16 +82,19 @@ class LinkWidget extends WidgetType {
   constructor(
     readonly label: string,
     readonly href: string,
+    readonly from: number,
     readonly options: LivePreviewOptions,
   ) {
     super()
   }
 
   eq(other: LinkWidget): boolean {
-    return other.label === this.label && other.href === this.href
+    return (
+      other.label === this.label && other.href === this.href && other.from === this.from
+    )
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const anchor = document.createElement('span')
     const isSource = this.href.startsWith('source:')
     anchor.className = isSource ? 'cm-source-link' : 'cm-link'
@@ -107,11 +110,19 @@ class LinkWidget extends WidgetType {
       if (isSource) this.options.onOpenSource?.(this.href.slice('source:'.length))
       else this.options.onOpenLink?.(this.href)
     }
-    // Cmd/Ctrl-click opens the source. A plain click falls through to the
-    // editor, which places the cursor inside the link — that both reveals the
-    // Markdown syntax for editing and enables the toolbar's "Open source".
     anchor.addEventListener('mousedown', (event) => {
-      if (event.metaKey || event.ctrlKey) open(event)
+      if (event.metaKey || event.ctrlKey) {
+        open(event)
+        return
+      }
+      // A rendered link is an atomic range, so a plain click would otherwise
+      // land beside it and leave the toolbar's "Open source" disabled — which
+      // reads as the citation being dead. Move the cursor into the link
+      // instead: that reveals its Markdown syntax for editing and arms the
+      // visible action, keeping the shortcut optional rather than required.
+      event.preventDefault()
+      view.dispatch({ selection: { anchor: this.from + 1 } })
+      view.focus()
     })
     anchor.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') open(event)
@@ -363,7 +374,7 @@ function buildDecorations(view: EditorView, options: LivePreviewOptions): Decora
         if (!label) return
         ranges.push(
           Decoration.replace({
-            widget: new LinkWidget(label, href, options),
+            widget: new LinkWidget(label, href, from, options),
           }).range(from, to),
         )
         return

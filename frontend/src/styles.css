@@ -178,6 +178,16 @@ select {
   grid-template-columns: minmax(230px, 17rem) minmax(34ch, 1fr) minmax(360px, 1.05fr);
 }
 
+/* No PDF open: the editor and chat share the space instead of leaving a gap
+   where the source panel would have been. */
+.shell.source-hidden .body {
+  grid-template-columns: minmax(230px, 17rem) minmax(34ch, 1.4fr) minmax(300px, 24rem);
+}
+
+.shell.source-hidden.chat-collapsed .body {
+  grid-template-columns: minmax(230px, 17rem) 1fr;
+}
+
 .body > * {
   min-width: 0;
   min-height: 0;
@@ -661,6 +671,11 @@ select {
 .pdf-controls .zoom {
   min-width: 3.2rem;
   text-align: center;
+}
+
+.pdf-controls .fit.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
 .pdf-note {
