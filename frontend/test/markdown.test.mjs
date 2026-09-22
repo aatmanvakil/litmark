@@ -1,0 +1,95 @@
+/**
+ * Tests for the read-only Markdown renderer used on chat surfaces.
+ *
+ * Agent output reaches this function, so the sanitization guarantees are the
+ * point: no raw HTML survives, and no link destination outside the allowed
+ * schemes becomes an anchor.
+ */
+
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+
+import { renderMarkdown } from './bundle/markdown.mjs'
+
+test('escapes raw HTML rather than rendering it', () => {
+  const html = renderMarkdown('<img src=x onerror="alert(1)">')
+  assert.ok(!html.includes('<img'), html)
+  assert.ok(html.includes('&lt;img'), html)
+  assert.ok(!html.includes('onerror="'), html)
+})
+
+test('drops a javascript: link destination', () => {
+  const html = renderMarkdown('[click me](javascript:alert(1))')
+  assert.ok(!html.includes('<a'), html)
+  // The text is left visible as ordinary escaped characters.
+  assert.ok(html.includes('click me'), html)
+})
+
+test('drops a data: link destination', () => {
+  const html = renderMarkdown('[x](data:text/html;base64,PHNjcmlwdD4=)')
+  assert.ok(!html.includes('<a'), html)
+})
+
+test('keeps http and mailto links, with safe rel attributes', () => {
+  const html = renderMarkdown('[site](https://example.com/paper.pdf)')
+  assert.ok(html.includes('href="https://example.com/paper.pdf"'), html)
+  assert.ok(html.includes('rel="noopener noreferrer"'), html)
+  assert.ok(html.includes('target="_blank"'), html)
+})
+
+test('renders a source: citation as a click target carrying its reference id', () => {
+  const html = renderMarkdown('See [Assumption 2, p. 12](source:ref-001) for the claim.')
+  assert.ok(html.includes('data-source-ref="ref-001"'), html)
+  assert.ok(html.includes('Assumption 2, p. 12'), html)
+  assert.ok(!html.includes('href='), 'a citation is not a navigable href')
+})
+
+test('rejects a malformed reference id instead of making a link', () => {
+  const html = renderMarkdown('[bad](source:../../etc/passwd)')
+  assert.ok(!html.includes('data-source-ref'), html)
+})
+
+test('renders headings, lists, quotes, and code', () => {
+  const html = renderMarkdown(
+    ['## Findings', '', '- first', '- second', '', '> quoted line', '', '`inline()`'].join('\n'),
+  )
+  assert.ok(html.includes('<h2>Findings</h2>'), html)
+  assert.ok(html.includes('<ul>'), html)
+  assert.ok(html.includes('<li>first</li>'), html)
+  assert.ok(html.includes('<blockquote>quoted line</blockquote>'), html)
+  assert.ok(html.includes('<code>inline()</code>'), html)
+})
+
+test('leaves fenced code contents unformatted', () => {
+  const html = renderMarkdown(['```', '**not bold** and [not a link](https://x.test)', '```'].join('\n'))
+  assert.ok(html.includes('<pre><code>'), html)
+  assert.ok(!html.includes('<strong>'), html)
+  assert.ok(!html.includes('<a href'), html)
+})
+
+test('does not treat prose text as a code-span placeholder', () => {
+  // The placeholder is NUL-delimited, so a bare number cannot collide with it.
+  const html = renderMarkdown('We estimate 3 models and `code` here.')
+  assert.ok(html.includes('We estimate 3 models'), html)
+  assert.ok(html.includes('<code>code</code>'), html)
+})
+
+test('renders inline and display math', () => {
+  const inline = renderMarkdown('The estimator is $\\hat{\\beta}$ here.')
+  assert.ok(inline.includes('katex'), inline)
+  const display = renderMarkdown('$$\\sum_{i=1}^{n} x_i$$')
+  assert.ok(display.includes('katex-display'), display)
+})
+
+test('invalid math is reported, not thrown', () => {
+  const html = renderMarkdown('broken $\\frac{1}$ math')
+  assert.ok(typeof html === 'string' && html.length > 0)
+  // KaTeX flags the error inline; the surrounding prose survives.
+  assert.ok(html.includes('broken') && html.includes('math'), html)
+})
+
+test('a bare dollar amount is not math', () => {
+  const html = renderMarkdown('It cost $5 and then $7 later.')
+  assert.ok(!html.includes('katex'), html)
+  assert.ok(html.includes('$5'), html)
+})

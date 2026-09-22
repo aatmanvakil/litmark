@@ -1,0 +1,585 @@
+"""REST resources and the resumable event stream.
+
+Validation errors and conflicts are returned explicitly. There is deliberately
+no arbitrary-path file API: notes and documents are addressed by ID.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Annotated, Any
+
+from fastapi import APIRouter, File, Query, Request, Response, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
+from ..agent.base import RunContext
+from ..agent.tools import dispatch
+from ..documents import QUEUED
+from ..errors import InvalidInput, NotFound, RevisionConflict
+from ..events import format_sse
+from ..references import PAGE_ONLY, RESOLVED, Reference, find_page, locate_quote, rects_for_range
+from ..services import Services
+from ..workspace import revision_of, utcnow
+
+
+def services_of(request: Request) -> Services:
+    return request.app.state.services  # type: ignore[no-any-return]
+
+
+# ------------------------------------------------------------------ schemas
+
+
+class NoteCreate(BaseModel):
+    title: str = Field(default="Untitled note", max_length=200)
+    text: str | None = None
+
+
+class NoteSave(BaseModel):
+    text: str
+    expected_revision: str | None = None
+
+
+class SummarySave(BaseModel):
+    text: str
+    expected_revision: str | None = None
+
+
+class MessageSend(BaseModel):
+    prompt: str
+    context: dict[str, Any] | None = None
+
+
+class ConversationCreate(BaseModel):
+    title: str = "Conversation"
+
+
+class ManualReference(BaseModel):
+    """A reference created from a human PDF selection."""
+
+    document_id: str
+    page_number: int
+    quote: str | None = None
+    prefix: str | None = None
+    suffix: str | None = None
+    start: int | None = Field(
+        default=None, description="Character offset into the page's extracted text."
+    )
+    end: int | None = None
+    allow_page_only: bool = False
+
+
+class ResolveRequest(BaseModel):
+    document_id: str
+    page_number: int
+    quote: str | None = None
+    prefix: str | None = None
+    suffix: str | None = None
+    allow_page_only: bool = False
+
+
+class UndoRequest(BaseModel):
+    expected_revision: str | None = None
+
+
+def build_router() -> APIRouter:
+    router = APIRouter()
+
+    # -------------------------------------------------------------- project
+
+    @router.get("/state")
+    async def state(request: Request) -> dict[str, Any]:
+        return services_of(request).project_state()
+
+    @router.get("/doctor")
+    async def doctor(request: Request) -> dict[str, Any]:
+        services = services_of(request)
+        return {
+            "project": str(services.workspace.root),
+            "agent": services.agent_availability().to_json(),
+            "documents": len(services.documents.list()),
+            "notes": len(services.workspace.list_notes()),
+            "references": len(services.references.all()),
+        }
+
+    # ---------------------------------------------------------------- notes
+
+    @router.get("/notes")
+    async def list_notes(request: Request) -> dict[str, Any]:
+        notes = services_of(request).workspace.list_notes()
+        return {"notes": [note.to_json(include_text=False) for note in notes]}
+
+    @router.post("/notes", status_code=201)
+    async def create_note(request: Request, body: NoteCreate) -> dict[str, Any]:
+        services = services_of(request)
+        note = services.workspace.create_note(title=body.title, text=body.text)
+        return note.to_json()
+
+    @router.get("/notes/{note_id}")
+    async def read_note(request: Request, note_id: str) -> dict[str, Any]:
+        return services_of(request).workspace.read_note(note_id).to_json()
+
+    @router.put("/notes/{note_id}")
+    async def save_note(request: Request, note_id: str, body: NoteSave) -> dict[str, Any]:
+        services = services_of(request)
+        exists = services.workspace.note_exists(note_id)
+        note = services.workspace.write_note(
+            note_id,
+            body.text,
+            expected_revision=body.expected_revision,
+            create=not exists,
+            snapshot_reason="user",
+        )
+        services.db.execute(
+            "INSERT INTO changes(id, target_kind, target_id, origin, summary, "
+            "base_revision, new_revision, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"chg-{note.revision[:12]}",
+                "note",
+                note_id,
+                "user",
+                "Saved from the editor",
+                body.expected_revision,
+                note.revision,
+                utcnow(),
+            ),
+        )
+        return note.to_json()
+
+    @router.delete("/notes/{note_id}", status_code=204)
+    async def delete_note(
+        request: Request, note_id: str, expected_revision: str | None = None
+    ) -> Response:
+        services_of(request).workspace.delete_note(
+            note_id, expected_revision=expected_revision
+        )
+        return Response(status_code=204)
+
+    # ------------------------------------------------------------ documents
+
+    @router.post("/documents", status_code=201)
+    async def upload_documents(
+        request: Request,
+        files: Annotated[list[UploadFile], File()],
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        imported: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for upload in files:
+            data = await upload.read()
+            try:
+                document, duplicate = services.documents.import_pdf(
+                    data, upload.filename or "document.pdf"
+                )
+            except InvalidInput as exc:
+                errors.append({"filename": upload.filename, "message": exc.message})
+                continue
+            if not duplicate:
+                # The PDF is readable immediately; extraction runs in the background.
+                services.enqueue_extraction(document.document_id)
+            imported.append(
+                {
+                    "document": document.api_json(
+                        summary_text=services.documents.summary_text(document.document_id)
+                    ),
+                    "duplicate": duplicate,
+                }
+            )
+        return {"imported": imported, "errors": errors}
+
+    @router.get("/documents")
+    async def list_documents(request: Request) -> dict[str, Any]:
+        services = services_of(request)
+        return {
+            "documents": [
+                document.api_json(
+                    summary_text=services.documents.summary_text(document.document_id)
+                )
+                for document in services.documents.list()
+            ]
+        }
+
+    @router.get("/documents/{document_id}")
+    async def get_document(request: Request, document_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        document = services.documents.get(document_id)
+        return document.api_json(summary_text=services.documents.summary_text(document_id))
+
+    @router.get("/documents/{document_id}/pdf")
+    async def get_pdf(request: Request, document_id: str) -> Response:
+        services = services_of(request)
+        document = services.documents.get(document_id)
+        path = services.workspace.resolve_inside(services.documents.pdf_path(document_id))
+        if not path.is_file():
+            raise NotFound(f"The stored PDF for {document_id!r} is missing.")
+        return Response(
+            content=path.read_bytes(),
+            media_type="application/pdf",
+            headers={
+                "content-disposition": f'inline; filename="{document.original_filename}"',
+                "cache-control": "private, max-age=3600",
+                "etag": f'"{document.sha256}"',
+            },
+        )
+
+    @router.get("/documents/{document_id}/pages")
+    async def get_pages(
+        request: Request,
+        document_id: str,
+        page: Annotated[list[int] | None, Query()] = None,
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        extraction = services.documents.extraction(document_id)
+        wanted = set(page or [])
+        pages = [
+            {
+                "page_number": p.page_number,
+                "page_label": p.page_label,
+                "width": p.width,
+                "height": p.height,
+                "rotation": p.rotation,
+                "warnings": p.warnings,
+                "text": p.text,
+            }
+            for p in extraction.pages
+            if not wanted or p.page_number in wanted
+        ]
+        return {
+            "document_id": document_id,
+            "page_count": extraction.page_count,
+            "quality": extraction.quality,
+            "warnings": extraction.warnings,
+            "pages": pages,
+        }
+
+    @router.get("/documents/{document_id}/summary")
+    async def get_summary(request: Request, document_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        document = services.documents.get(document_id)
+        text = services.documents.summary_text(document_id)
+        return {
+            "document_id": document_id,
+            "text": text,
+            "revision": revision_of(text) if text is not None else None,
+            "status": document.summary.get("status"),
+            "error": document.summary.get("error"),
+            "extraction_quality": document.extraction.get("quality"),
+            "extraction_warnings": document.extraction.get("warnings") or [],
+        }
+
+    @router.put("/documents/{document_id}/summary")
+    async def save_summary(
+        request: Request, document_id: str, body: SummarySave
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        revision, _previous = services.documents.write_summary(
+            document_id, body.text, expected_revision=body.expected_revision
+        )
+        services.documents.set_summary_status(document_id, "ready")
+        return {"document_id": document_id, "revision": revision}
+
+    @router.post("/documents/{document_id}/extract")
+    async def reextract(request: Request, document_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        services.documents.get(document_id)
+        return {"job_id": services.enqueue_extraction(document_id)}
+
+    @router.post("/documents/{document_id}/summarize")
+    async def summarize(request: Request, document_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        run_id = services.runner.queue_summary(document_id)
+        if run_id is None:
+            document = services.documents.get(document_id)
+            return {
+                "queued": False,
+                "reason": document.summary.get("error")
+                or "A summary cannot be generated for this document yet.",
+            }
+        return {"queued": True, "run_id": run_id, "status": QUEUED}
+
+    @router.delete("/documents/{document_id}", status_code=200)
+    async def delete_document(request: Request, document_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        services.documents.delete(document_id)
+        # References survive as a recoverable missing-source state.
+        touched = services.references.mark_missing(document_id)
+        return {"deleted": document_id, "references_marked_missing": touched}
+
+    # --------------------------------------------------------------- search
+
+    @router.get("/search")
+    async def search(
+        request: Request,
+        q: str,
+        document_id: Annotated[list[str] | None, Query()] = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        hits = services.documents.search(q, document_ids=document_id, limit=limit)
+        notes = []
+        needle = q.strip().lower()
+        if needle:
+            for note in services.workspace.list_notes():
+                position = note.text.lower().find(needle)
+                if position >= 0:
+                    notes.append(
+                        {
+                            "note_id": note.note_id,
+                            "title": note.title,
+                            "snippet": " ".join(
+                                note.text[max(0, position - 80) : position + 120].split()
+                            ),
+                        }
+                    )
+        return {"query": q, "passages": [hit.to_json() for hit in hits], "notes": notes}
+
+    # ----------------------------------------------------------- references
+
+    @router.get("/references")
+    async def list_references(request: Request) -> dict[str, Any]:
+        registry = services_of(request).references.all()
+        return {
+            "references": [reference.api_json() for reference in registry.values()],
+        }
+
+    @router.get("/references/{reference_id}")
+    async def get_reference(request: Request, reference_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        reference = services.references.get(reference_id)
+        payload = reference.api_json()
+        try:
+            document = services.documents.get(reference.document_id)
+        except NotFound:
+            payload["missing_source"] = True
+            payload["message"] = (
+                "The cited document is no longer in this project. The reference is "
+                "preserved so it can be recovered."
+            )
+            return payload
+        payload["document_title"] = document.display_title
+        payload["document_sha256_matches"] = document.sha256 == reference.document_sha256
+        if not payload["document_sha256_matches"]:
+            payload["message"] = (
+                "The stored PDF's bytes differ from the ones this reference was made "
+                "against; the highlight may no longer be in the right place."
+            )
+        return payload
+
+    @router.post("/references", status_code=201)
+    async def create_reference(request: Request, body: ManualReference) -> dict[str, Any]:
+        """Create a reference from a human PDF selection on one page.
+
+        The browser sends the offsets of the selected characters in the page's
+        extracted text; geometry is computed here so CSS pixels are never stored.
+        """
+        services = services_of(request)
+        document = services.documents.get(body.document_id)
+        page = find_page(services.documents.extraction(body.document_id), body.page_number)
+
+        rects: list[list[float]] = []
+        quote = body.quote
+        status = RESOLVED
+        message: str | None = None
+
+        if body.start is not None and body.end is not None and body.end > body.start:
+            rects = rects_for_range(page, body.start, body.end)
+            quote = page.text[body.start : body.end]
+        elif quote:
+            match = locate_quote(page, quote, prefix=body.prefix, suffix=body.suffix)
+            if match.ok:
+                rects = match.rects
+                quote = match.quote
+            elif body.allow_page_only:
+                status, message = PAGE_ONLY, match.message
+            else:
+                return JSONResponse(
+                    {"error": {"code": match.status, "message": match.message}},
+                    status_code=422,
+                )
+        elif body.allow_page_only:
+            status, message = PAGE_ONLY, "Page-only citation."
+        else:
+            raise InvalidInput("Supply a selection range, a quotation, or allow_page_only.")
+
+        if not rects and status == RESOLVED:
+            status = PAGE_ONLY
+            message = "The selection produced no usable geometry; cited the page only."
+
+        reference = Reference(
+            reference_id=services.references.allocate_id(),
+            document_id=body.document_id,
+            document_sha256=document.sha256,
+            page_number=page.page_number,
+            page_label=page.page_label,
+            status=status,
+            quote=quote,
+            prefix=body.prefix,
+            suffix=body.suffix,
+            rects=rects,
+            note=message,
+            created_at=utcnow(),
+        )
+        services.references.put(reference)
+        label = f"{document.display_title}, p. {page.page_label or page.page_number}"
+        return {
+            **reference.api_json(),
+            "markdown_link": f"[{label}](source:{reference.reference_id})",
+            "message": message,
+        }
+
+    @router.post("/references/resolve")
+    async def resolve_reference(request: Request, body: ResolveRequest) -> dict[str, Any]:
+        services = services_of(request)
+        return dispatch(services.tools, "resolve_source", body.model_dump())
+
+    # -------------------------------------------------------- conversations
+
+    @router.get("/conversations")
+    async def list_conversations(request: Request) -> dict[str, Any]:
+        return {"conversations": services_of(request).runner.list_conversations()}
+
+    @router.post("/conversations", status_code=201)
+    async def create_conversation(
+        request: Request, body: ConversationCreate
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        conversation_id = services.runner.create_conversation(body.title)
+        return services.runner.conversation(conversation_id)
+
+    @router.get("/conversations/{conversation_id}")
+    async def get_conversation(request: Request, conversation_id: str) -> dict[str, Any]:
+        return services_of(request).runner.conversation(conversation_id)
+
+    @router.get("/conversations/{conversation_id}/export")
+    async def export_conversation(
+        request: Request, conversation_id: str, format: str = "markdown"
+    ) -> Response:
+        services = services_of(request)
+        if format == "json":
+            payload = services.runner.conversation(conversation_id)
+            return Response(
+                content=json.dumps(payload, indent=2, ensure_ascii=False),
+                media_type="application/json",
+                headers={
+                    "content-disposition": f'attachment; filename="{conversation_id}.json"'
+                },
+            )
+        return PlainTextResponse(
+            services.runner.transcript_markdown(conversation_id),
+            headers={"content-disposition": f'attachment; filename="{conversation_id}.md"'},
+        )
+
+    @router.post("/conversations/{conversation_id}/messages", status_code=202)
+    async def send_message(
+        request: Request, conversation_id: str, body: MessageSend
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        services.runner.conversation(conversation_id)  # Confirms it exists.
+        return services.runner.submit(
+            conversation_id=conversation_id,
+            prompt=body.prompt,
+            context=RunContext.from_json(body.context),
+        )
+
+    @router.post("/runs/{run_id}/cancel")
+    async def cancel_run(request: Request, run_id: str) -> dict[str, Any]:
+        return await services_of(request).runner.cancel(run_id)
+
+    # -------------------------------------------------------------- changes
+
+    @router.get("/changes")
+    async def list_changes(request: Request, limit: int = 50) -> dict[str, Any]:
+        rows = services_of(request).db.query(
+            "SELECT * FROM changes ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
+        )
+        return {
+            "changes": [
+                {
+                    "change_id": row["id"],
+                    "target_kind": row["target_kind"],
+                    "target_id": row["target_id"],
+                    "origin": row["origin"],
+                    "summary": row["summary"],
+                    "base_revision": row["base_revision"],
+                    "new_revision": row["new_revision"],
+                    "undoable": bool(row["snapshot_path"]) and not row["undone_at"],
+                    "undone_at": row["undone_at"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+        }
+
+    @router.post("/changes/{change_id}/undo")
+    async def undo_change(
+        request: Request, change_id: str, body: UndoRequest
+    ) -> dict[str, Any]:
+        """Undo is itself version-checked, so it cannot remove later edits."""
+        services = services_of(request)
+        row = services.db.query_one("SELECT * FROM changes WHERE id = ?", (change_id,))
+        if row is None:
+            raise NotFound(f"No change {change_id!r}.")
+        if row["undone_at"]:
+            raise InvalidInput("That change has already been undone.")
+        if not row["snapshot_path"]:
+            raise InvalidInput(
+                "This change has no previous content to restore (it created the file)."
+            )
+        snapshot = services.workspace.resolve_inside(row["snapshot_path"])
+        if not snapshot.is_file():
+            raise NotFound("The recovery snapshot for this change is missing.")
+
+        previous_text = snapshot.read_text("utf-8")
+        expected = body.expected_revision or row["new_revision"]
+        if row["target_kind"] == "note":
+            note = services.workspace.write_note(
+                row["target_id"],
+                previous_text,
+                expected_revision=expected,
+                snapshot_reason="undo",
+            )
+            new_revision = note.revision
+        else:
+            new_revision, _ = services.documents.write_summary(
+                row["target_id"], previous_text, expected_revision=expected
+            )
+        services.db.execute(
+            "UPDATE changes SET undone_at = ? WHERE id = ?", (utcnow(), change_id)
+        )
+        return {"change_id": change_id, "revision": new_revision, "undone": True}
+
+    # --------------------------------------------------------------- events
+
+    @router.get("/events")
+    async def events(
+        request: Request,
+        since: int = 0,
+        conversation_id: str | None = None,
+    ) -> StreamingResponse:
+        services = services_of(request)
+        last_event_id = request.headers.get("last-event-id")
+        if last_event_id and last_event_id.isdigit():
+            since = max(since, int(last_event_id))
+
+        async def stream():  # type: ignore[no-untyped-def]
+            async for event in services.bus.stream(
+                since=since, conversation_id=conversation_id
+            ):
+                if await request.is_disconnected():
+                    break
+                yield format_sse(event)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "cache-control": "no-cache, no-transform",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no",
+            },
+        )
+
+    return router
+
+
+__all__ = ["build_router", "RevisionConflict"]

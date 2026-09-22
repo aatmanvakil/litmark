@@ -1,0 +1,216 @@
+"""Wiring checks for the live Claude Agent SDK adapter.
+
+These run without contacting a provider. They verify that the adapter matches
+the SDK's actual API surface, that the tool schemas it registers are the ones
+the project implements, and that an unconfigured backend reports the fact
+instead of failing obscurely. An actual provider-backed run is a separate,
+billable release step.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from research_workspace.agent import claude_sdk
+from research_workspace.agent.claude_sdk import (
+    ALLOWED_TOOLS,
+    DISALLOWED_TOOLS,
+    MCP_SERVER_NAME,
+    ClaudeAgentBackend,
+    _safe_input,
+    _session_id_of,
+    _short_tool_name,
+)
+from research_workspace.agent.tools import TOOL_SCHEMAS, ProjectTools
+
+sdk_installed = claude_sdk.sdk_available()[0]
+requires_sdk = pytest.mark.skipif(not sdk_installed, reason="claude-agent-sdk is not installed")
+
+
+def backend(services) -> ClaudeAgentBackend:
+    return ClaudeAgentBackend(services.tools, cwd=str(services.workspace.root))
+
+
+def test_every_project_tool_is_allowed(services):
+    """A tool the agent cannot call is a tool that may as well not exist."""
+    implemented = {schema["name"] for schema in TOOL_SCHEMAS}
+    allowed = {name.rsplit("__", 1)[-1] for name in ALLOWED_TOOLS}
+    assert allowed == implemented
+    assert all(name.startswith(f"mcp__{MCP_SERVER_NAME}__") for name in ALLOWED_TOOLS)
+
+
+def test_tool_schemas_match_the_implementations(services):
+    """Each declared tool exists on ProjectTools with the parameters declared."""
+    import inspect
+
+    for schema in TOOL_SCHEMAS:
+        handler = getattr(ProjectTools, schema["name"], None)
+        assert callable(handler), f"{schema['name']} is declared but not implemented"
+        signature = inspect.signature(handler)
+        parameters = set(signature.parameters) - {"self"}
+        declared = set(schema["input_schema"].get("properties", {}))
+        unknown = declared - parameters
+        assert not unknown, f"{schema['name']} declares unknown parameters: {unknown}"
+        required = set(schema["input_schema"].get("required", []))
+        assert required <= parameters, f"{schema['name']} requires unknown parameters"
+        # Every required parameter must genuinely lack a default.
+        for name in required:
+            assert signature.parameters[name].default is inspect.Parameter.empty
+
+
+def test_built_in_file_and_shell_tools_are_disabled(services, monkeypatch):
+    """Edits must go through the version-checked tools, not Write/Edit/Bash."""
+    captured: dict[str, object] = {}
+
+    class FakeOptions:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(claude_sdk, "sdk_available", lambda: (True, None))
+    module = pytest.importorskip("claude_agent_sdk")
+    monkeypatch.setattr(module, "ClaudeAgentOptions", FakeOptions, raising=False)
+
+    # Constructing the options is enough; the run itself is not started.
+    instance = backend(services)
+    from research_workspace.agent.base import RunContext, RunRequest
+
+    request = RunRequest(
+        run_id="run-1",
+        conversation_id="conv-1",
+        prompt="hello",
+        context=RunContext(),
+    )
+    import asyncio
+
+    async def collect() -> list[str]:
+        seen: list[str] = []
+        async for event in instance.start_run(request):
+            seen.append(event.type)
+            if len(seen) > 4:
+                break
+        return seen
+
+    # Connecting fails because the options object is a stub; the adapter must
+    # report that as an error event rather than raising into the runner.
+    events = asyncio.run(asyncio.wait_for(collect(), timeout=15))
+    assert events[0] == "error", events
+    assert events[-1] == "done", events
+
+    assert captured, "ClaudeAgentOptions was never constructed"
+    # `tools` is the explicit allowlist: only the project tools are loaded.
+    assert set(captured.get("tools") or []) == set(ALLOWED_TOOLS)
+    disallowed = set(captured.get("disallowed_tools") or [])
+    assert {"Bash", "Write", "Edit", "Read", "Glob", "Grep", "WebFetch"} <= disallowed
+    assert disallowed == set(DISALLOWED_TOOLS)
+    assert not (set(ALLOWED_TOOLS) & disallowed), "a tool cannot be both allowed and blocked"
+    assert captured.get("cwd") == str(services.workspace.root)
+    assert captured.get("include_partial_messages") is True
+    assert MCP_SERVER_NAME in (captured.get("mcp_servers") or {})
+
+
+@requires_sdk
+def test_adapter_uses_options_the_installed_sdk_accepts():
+    """Guards against drift between the adapter and the installed SDK."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    fields = set(ClaudeAgentOptions.__dataclass_fields__)
+    used = {
+        "system_prompt",
+        "model",
+        "cwd",
+        "mcp_servers",
+        "allowed_tools",
+        "disallowed_tools",
+        "permission_mode",
+        "include_partial_messages",
+        "resume",
+        "max_turns",
+    }
+    assert used <= fields, f"the installed SDK lacks: {sorted(used - fields)}"
+
+
+@requires_sdk
+def test_message_types_the_translator_switches_on_exist():
+    """`_translate` dispatches on class names; they must be real SDK types."""
+    import claude_agent_sdk as sdk
+
+    for name in (
+        "AssistantMessage",
+        "ResultMessage",
+        "SystemMessage",
+        "StreamEvent",
+        "TextBlock",
+        "ToolUseBlock",
+        "ToolResultBlock",
+    ):
+        assert hasattr(sdk, name), f"the installed SDK has no {name}"
+
+
+def test_missing_sdk_is_reported_as_unavailable(services, monkeypatch):
+    monkeypatch.setattr(claude_sdk, "sdk_available", lambda: (False, "No module named x"))
+    availability = backend(services).availability()
+    assert availability.ready is False
+    assert availability.installed is False
+    assert "pip install" in availability.message
+
+
+def test_missing_runtime_is_reported_as_unavailable(services, monkeypatch):
+    monkeypatch.setattr(claude_sdk, "sdk_available", lambda: (True, None))
+    monkeypatch.setattr(claude_sdk.shutil, "which", lambda _name: None)
+    availability = backend(services).availability()
+    assert availability.installed is True
+    assert availability.authenticated is False
+    assert "runtime" in availability.message
+
+
+def test_missing_credentials_are_reported_without_printing_them(
+    services, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(claude_sdk, "sdk_available", lambda: (True, None))
+    monkeypatch.setattr(claude_sdk.shutil, "which", lambda _name: "/usr/bin/claude")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(claude_sdk.os.path, "isdir", lambda _path: False)
+
+    availability = backend(services).availability()
+    assert availability.authenticated is False
+    assert "credentials" in availability.message
+    assert "separate from this application" in availability.message
+
+
+def test_configured_credentials_are_never_echoed(services, monkeypatch):
+    monkeypatch.setattr(claude_sdk, "sdk_available", lambda: (True, None))
+    monkeypatch.setattr(claude_sdk.shutil, "which", lambda _name: "/usr/bin/claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value-do-not-print")
+
+    availability = backend(services).availability()
+    assert availability.ready is True
+    serialized = str(availability.to_json())
+    assert "sk-ant-secret-value-do-not-print" not in serialized
+
+
+def test_tool_names_are_shortened_for_display():
+    assert _short_tool_name("mcp__research__read_pages") == "read_pages"
+    assert _short_tool_name("Read") == "Read"
+
+
+def test_long_tool_inputs_are_trimmed_for_the_activity_view():
+    trimmed = _safe_input({"text": "x" * 900, "n": 3})
+    assert len(str(trimmed["text"])) < 900
+    assert trimmed["n"] == 3
+    assert _safe_input("not a dict")["value"] == "not a dict"
+
+
+def test_session_id_is_found_wherever_the_sdk_reports_it():
+    class Direct:
+        session_id = "abc"
+
+    class Nested:
+        data = {"session_id": "def"}
+
+    class Neither:
+        pass
+
+    assert _session_id_of(Direct()) == "abc"
+    assert _session_id_of(Nested()) == "def"
+    assert _session_id_of(Neither()) is None

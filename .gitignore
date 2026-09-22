@@ -1,0 +1,15 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+node_modules/
+frontend/dist/
+src/research_workspace/static/
+.pytest_cache/
+.ruff_cache/
+my-research/
+*.sqlite*
+frontend/test/bundle/
