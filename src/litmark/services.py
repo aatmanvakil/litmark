@@ -112,23 +112,37 @@ class Services:
 
     # -------------------------------------------------------- bibliography
 
-    def bibliography(self, *, cited_only: bool = False) -> Bibliography:
-        """Build the BibTeX view of the project's documents and references."""
+    def bibliography(
+        self, *, cited_only: bool = False, collection_id: str | None = None
+    ) -> Bibliography:
+        """Build the BibTeX view of the project's documents and references.
+
+        ``cited_only`` and ``collection_id`` compose: the first narrows to
+        works something actually cites, the second to a collection's members.
+        """
+        documents = self.documents.list()
+        if collection_id is not None:
+            members = set(self.collections.member_ids(collection_id))
+            documents = [d for d in documents if d.document_id in members]
         return build_bibliography(
-            self.documents.list(),
+            documents,
             self.references.all(),
             citations_by_reference(self.workspace, self.documents),
             cited_only=cited_only,
         )
 
-    def write_bibliography(self, *, cited_only: bool = False) -> dict[str, Any]:
+    def write_bibliography(
+        self, *, cited_only: bool = False, collection_id: str | None = None
+    ) -> dict[str, Any]:
         """Write ``references.bib`` into the project directory.
 
         The generated text is deterministic, so regenerating an unchanged
         bibliography rewrites nothing. When it has changed, any previous file —
         including one edited by hand — is snapshotted first.
         """
-        bibliography = self.bibliography(cited_only=cited_only)
+        bibliography = self.bibliography(
+            cited_only=cited_only, collection_id=collection_id
+        )
         text = bibliography.to_bibtex()
         path = self.workspace.resolve_inside(self.workspace.bibliography_file)
         current = path.read_text("utf-8") if path.is_file() else None
