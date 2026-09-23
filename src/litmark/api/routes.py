@@ -18,6 +18,7 @@ from fastapi import APIRouter, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..acquisition.fetch import FetchRefused
 from ..agent.base import RunContext
 from ..agent.tools import dispatch
 from ..documents import QUEUED
@@ -159,6 +160,13 @@ class AcquisitionQuery(BaseModel):
     """A title, a pasted citation, or a DOI."""
 
     query: str
+
+
+class AcquisitionDownload(BaseModel):
+    """A confirmed version: the query it came from, and the chosen URL."""
+
+    query: str
+    url: str
 
 
 class UnclaimedImport(BaseModel):
@@ -455,6 +463,19 @@ def build_router() -> APIRouter:
         """
         services = services_of(request)
         return services.resolve_paper(body.query).to_json()
+
+    @router.post("/acquisition/download", status_code=201)
+    async def download_acquisition(
+        request: Request, body: AcquisitionDownload
+    ) -> dict[str, Any]:
+        """Fetch a confirmed version and import it."""
+        services = services_of(request)
+        try:
+            return services.acquire_paper(body.query, body.url)
+        except FetchRefused as exc:
+            raise InvalidInput(
+                f"The download was refused: {exc.reason}.", **exc.details
+            ) from exc
 
     # -------------------------------------------------------------- papers
 

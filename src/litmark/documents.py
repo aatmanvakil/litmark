@@ -59,6 +59,8 @@ class Document:
     # was produced, not when the work was published, so it is withheld from
     # the canonical filename until someone confirms it.
     year_source: str | None = None
+    doi: str | None = None
+    doi_source: str | None = None
     page_count: int | None = None
     extraction: dict[str, Any] = field(default_factory=dict)
     summary: dict[str, Any] = field(default_factory=dict)
@@ -104,6 +106,8 @@ class Document:
             "authors": self.authors,
             "year": self.year,
             "year_source": self.year_source,
+            "doi": self.doi,
+            "doi_source": self.doi_source,
             "page_count": self.page_count,
             "extraction": self.extraction,
             "summary": self.summary,
@@ -134,6 +138,8 @@ class Document:
             authors=data.get("authors"),
             year=data.get("year"),
             year_source=data.get("year_source"),
+            doi=data.get("doi"),
+            doi_source=data.get("doi_source"),
             page_count=data.get("page_count"),
             pdf=data.get("pdf") or {},
             extraction=data.get("extraction") or {},
@@ -380,6 +386,11 @@ class DocumentStore:
                 document.title = title.strip() or None
             if authors is not None:
                 document.authors = authors.strip() or None
+            if doi is not None:
+                from .acquisition.model import normalize_doi
+
+                document.doi = normalize_doi(doi)
+                document.doi_source = "manual" if document.doi else None
             if year is not None:
                 if not 1000 <= year <= 2999:
                     raise InvalidInput(f"{year} is not a plausible publication year.")
