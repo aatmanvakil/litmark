@@ -38,6 +38,10 @@ export interface ChatProps {
   onContextChange: (context: MessageContext) => void
   onOpenSource: (referenceId: string) => void
   onReload: () => void
+  scopeName: string | null
+  scopeCount: number
+  scopeDocumentIds: string[] | null
+  onClearScope: () => void
 }
 
 export function Chat(props: ChatProps) {
@@ -273,6 +277,10 @@ export function Chat(props: ChatProps) {
       <ContextChips
         context={props.context}
         documents={props.documents}
+        scopeName={props.scopeName}
+        scopeCount={props.scopeCount}
+        scopeDocumentIds={props.scopeDocumentIds}
+        onClearScope={props.onClearScope}
         onChange={props.onContextChange}
       />
 
@@ -347,13 +355,25 @@ function Bubble({
 function ContextChips({
   context,
   documents,
+  scopeName,
+  scopeCount,
+  scopeDocumentIds,
+  onClearScope,
   onChange,
 }: {
   context: MessageContext
   documents: DocumentRecord[]
+  scopeName: string | null
+  scopeCount: number
+  scopeDocumentIds: string[] | null
+  onClearScope: () => void
   onChange: (context: MessageContext) => void
 }) {
   const attached = context.document_ids ?? []
+  // Attaching a paper the scope excludes would contradict the scope chip
+  // sitting next to it, so those chips are dimmed and confirm first.
+  const inScope = (id: string): boolean =>
+    scopeDocumentIds === null || scopeDocumentIds.includes(id)
   const toggle = (id: string): void => {
     onChange({
       ...context,
@@ -364,6 +384,15 @@ function ContextChips({
   }
   return (
     <div class="chips" aria-label="Message context">
+      {scopeName && (
+        <span class="chip scope" title="Only these papers can be read, resolved or written">
+          Scope: {scopeName} · searching {scopeCount}{' '}
+          {scopeCount === 1 ? 'paper' : 'papers'}
+          <button type="button" onClick={onClearScope} title="Search every paper">
+            ✕
+          </button>
+        </span>
+      )}
       {context.note_id && <span class="chip">note: {context.note_id}</span>}
       {context.selection && (
         <span class="chip" title={context.selection}>
@@ -379,12 +408,28 @@ function ContextChips({
         <button
           key={document.document_id}
           type="button"
-          class={attached.includes(document.document_id) ? 'chip toggle on' : 'chip toggle'}
-          onClick={() => toggle(document.document_id)}
+          class={
+            (attached.includes(document.document_id) ? 'chip toggle on' : 'chip toggle') +
+            (inScope(document.document_id) ? '' : ' out-of-scope')
+          }
+          onClick={() => {
+            if (
+              !inScope(document.document_id) &&
+              !window.confirm(
+                `${document.display_title} is not in ${scopeName}. Attaching it ` +
+                  'will not widen the scope — clear the scope chip to search everything.',
+              )
+            ) {
+              return
+            }
+            toggle(document.document_id)
+          }}
           title={
-            attached.includes(document.document_id)
-              ? 'Attached as starting context'
-              : 'Attach as starting context'
+            !inScope(document.document_id)
+              ? `Outside ${scopeName}`
+              : attached.includes(document.document_id)
+                ? 'Attached as starting context'
+                : 'Attach as starting context'
           }
         >
           {document.display_title.slice(0, 28)}

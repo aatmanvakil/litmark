@@ -255,6 +255,9 @@ export interface MessageContext {
   document_ids?: string[]
   reference_id?: string | null
   page_number?: number | null
+  /** The collection this message is scoped to. Membership is resolved
+   *  server-side, so the client never sends `scope_document_ids`. */
+  collection_id?: string | null
 }
 
 // ------------------------------------------------------------------- api
