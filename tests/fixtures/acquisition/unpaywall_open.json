@@ -1,0 +1,15 @@
+{
+  "doi": "10.1234/exchange.2021",
+  "title": "Exchange Rate Disconnect in General Equilibrium",
+  "year": 2021,
+  "journal_name": "Journal of Political Economy",
+  "is_oa": true,
+  "doi_url": "https://doi.org/10.1234/exchange.2021",
+  "z_authors": [{"given": "Anna", "family": "Müller"}],
+  "oa_locations": [
+    {"version": "acceptedVersion", "host_type": "repository",
+     "url_for_pdf": "https://eprints.example.ac.uk/1/accepted.pdf", "license": null},
+    {"version": "publishedVersion", "host_type": "publisher",
+     "url_for_pdf": "https://journals.example.org/jpe/exchange.pdf", "license": "cc-by"}
+  ]
+}

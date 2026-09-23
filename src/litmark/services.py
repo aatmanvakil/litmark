@@ -17,6 +17,7 @@ from .agent.fake import FakeBackend
 from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
 from .bibliography import Bibliography, build_bibliography
+from .acquisition import Resolution, resolve
 from .collections import CollectionStore
 from .db import Database
 from .documents import DocumentStore
@@ -45,6 +46,9 @@ class Services:
             max_upload_bytes=int(float(ingestion.get("max_upload_mb", 64)) * 1024 * 1024),
         )
         self.references = ReferenceStore(workspace)
+        # Providers are injected; none is configured until a transport exists.
+        self._metadata_sources: list[Any] = []
+        self._version_sources: list[Any] = []
         self.collections = CollectionStore(workspace)
         self.tools = ProjectTools(
             workspace, self.documents, self.references, self.db, self.collections
@@ -159,6 +163,28 @@ class Services:
         }
 
     # -------------------------------------------------------------- status
+
+    # -------------------------------------------------------- acquisition
+
+    def metadata_sources(self) -> tuple[list[Any], list[Any]]:
+        """Configured providers, as (metadata, version) lists.
+
+        Empty until a transport is configured. Resolution then reports that it
+        cannot reach anything, rather than inventing a result.
+        """
+        return list(self._metadata_sources), list(self._version_sources)
+
+    def resolve_paper(self, query: str) -> Resolution:
+        metadata, versions = self.metadata_sources()
+        if not metadata:
+            return Resolution(
+                query=query.strip(),
+                warnings=[
+                    "No metadata provider is configured, so a paper cannot be "
+                    "looked up. You can still import a PDF you already have."
+                ],
+            )
+        return resolve(query, metadata_sources=metadata, version_sources=versions)
 
     def agent_availability(self) -> Availability:
         return self.backend.availability()

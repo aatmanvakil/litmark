@@ -155,6 +155,12 @@ class DocumentMetadata(BaseModel):
     clear: list[Literal["title", "authors", "year"]] = Field(default_factory=list)
 
 
+class AcquisitionQuery(BaseModel):
+    """A title, a pasted citation, or a DOI."""
+
+    query: str
+
+
 class UnclaimedImport(BaseModel):
     path: str
 
@@ -435,6 +441,20 @@ def build_router() -> APIRouter:
             "references_marked_missing": touched,
             "collections_updated": released,
         }
+
+    # --------------------------------------------------------- acquisition
+
+    @router.post("/acquisition/resolve")
+    async def resolve_acquisition(
+        request: Request, body: AcquisitionQuery
+    ) -> dict[str, Any]:
+        """Candidate works for a query.
+
+        Writes nothing: no document, no Papers/ entry, no metadata, no
+        reference. Abandoning the result leaves the project byte-identical.
+        """
+        services = services_of(request)
+        return services.resolve_paper(body.query).to_json()
 
     # -------------------------------------------------------------- papers
 
