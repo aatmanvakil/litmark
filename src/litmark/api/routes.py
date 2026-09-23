@@ -60,6 +60,23 @@ def _content_disposition(disposition: str, filename: str, fallback: str) -> str:
     )
 
 
+def _narrow_to_collection(
+    services: Services, document_ids: list[str] | None, collection_id: str | None
+) -> list[str] | None:
+    """Intersect an explicit document filter with a collection's membership.
+
+    Returns ``None`` only when neither narrows anything; an empty list means
+    the intersection is genuinely empty and must match nothing.
+    """
+    if collection_id is None:
+        return document_ids
+    members = services.collections.member_ids(collection_id)
+    if document_ids is None:
+        return members
+    allowed = set(members)
+    return [document_id for document_id in document_ids if document_id in allowed]
+
+
 def _publish_collection(
     services: Services, collection_id: str, payload: dict[str, Any] | None
 ) -> None:
@@ -473,10 +490,12 @@ def build_router() -> APIRouter:
         request: Request,
         q: str,
         document_id: Annotated[list[str] | None, Query()] = None,
+        collection_id: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         services = services_of(request)
-        hits = services.documents.search(q, document_ids=document_id, limit=limit)
+        scope = _narrow_to_collection(services, document_id, collection_id)
+        hits = services.documents.search(q, document_ids=scope, limit=limit)
         notes = []
         needle = q.strip().lower()
         if needle:

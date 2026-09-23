@@ -44,6 +44,10 @@ export function App() {
   const [connected, setConnected] = useState(false)
   const [events, setEvents] = useState<ServerEvent[]>([])
 
+  // Scope is a browser-session choice, not server state: it narrows what the
+  // next message can reach, it does not select a saved conversation.
+  const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null)
+
   const [target, setTarget] = useState<MainTarget>({ kind: 'empty' })
   const [buffer, setBuffer] = useState<Buffer | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -147,7 +151,11 @@ export function App() {
   useEffect(() => {
     if (events.length === 0) return
     const latest = events[events.length - 1]!
-    if (latest.type === 'document_updated' || latest.type === 'job_updated') {
+    if (
+      latest.type === 'document_updated' ||
+      latest.type === 'job_updated' ||
+      latest.type === 'collection_updated'
+    ) {
       void refreshState()
     }
     if (latest.type === 'file_changed') {
@@ -513,6 +521,28 @@ export function App() {
             documents={state.documents}
             notes={state.notes}
             changes={changes}
+            collections={state.collections ?? []}
+            unfiled={state.unfiled ?? []}
+            activeCollectionId={activeCollectionId}
+            onSelectCollection={setActiveCollectionId}
+            onCreateCollection={async (kind, name) => {
+              await api.createCollection(kind, name)
+              await refreshState()
+            }}
+            onRenameCollection={async (collectionId, name) => {
+              await api.renameCollection(collectionId, name)
+              await refreshState()
+            }}
+            onDeleteCollection={async (collectionId) => {
+              await api.deleteCollection(collectionId)
+              if (activeCollectionId === collectionId) setActiveCollectionId(null)
+              await refreshState()
+            }}
+            onAssign={async (collectionId, documentId, member) => {
+              if (member) await api.addToCollection(collectionId, [documentId])
+              else await api.removeFromCollection(collectionId, documentId)
+              await refreshState()
+            }}
             activeTarget={target}
             onOpenNote={(noteId) => {
               setTarget({ kind: 'note', noteId })

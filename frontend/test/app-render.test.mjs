@@ -47,6 +47,18 @@ const STATE = {
   notes: [
     { note_id: 'welcome', title: 'Welcome', revision: 'rev-1', modified_at: '2026-01-01T00:00:00Z' },
   ],
+  collections: [
+    {
+      collection_id: 'col-001',
+      kind: 'project',
+      name: 'Minimum wage paper',
+      documents: ['doc-001'],
+      document_count: 1,
+      created_at: '2026-09-23T00:00:00Z',
+      updated_at: '2026-09-23T00:00:00Z',
+    },
+  ],
+  unfiled: [],
   conversations: [{ conversation_id: 'conv-1', title: 'Chat', updated_at: '2026-01-01T00:00:00Z' }],
   latest_seq: 0,
 }
