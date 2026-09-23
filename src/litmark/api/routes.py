@@ -143,6 +143,7 @@ class UndoRequest(BaseModel):
 
 class BibliographyWrite(BaseModel):
     cited_only: bool = False
+    collection_id: str | None = None
 
 
 class CollectionCreate(BaseModel):
@@ -634,14 +635,19 @@ def build_router() -> APIRouter:
     # ``.bib`` file itself, which is not one Pydantic response shape.
     @router.get("/bibliography", response_model=None)
     async def get_bibliography(
-        request: Request, cited_only: bool = False, format: str = "json"
+        request: Request,
+        cited_only: bool = False,
+        format: str = "json",
+        collection_id: str | None = None,
     ) -> Response | dict[str, Any]:
         """The BibTeX view of the project, as JSON or as the file itself.
 
         ``cited_only`` narrows it to works a note or summary actually cites.
         """
         services = services_of(request)
-        bibliography = services.bibliography(cited_only=cited_only)
+        bibliography = services.bibliography(
+            cited_only=cited_only, collection_id=collection_id
+        )
         if format == "bibtex":
             return PlainTextResponse(
                 bibliography.to_bibtex(),
@@ -655,7 +661,9 @@ def build_router() -> APIRouter:
         request: Request, body: BibliographyWrite
     ) -> dict[str, Any]:
         """Write ``references.bib`` into the project directory."""
-        return services_of(request).write_bibliography(cited_only=body.cited_only)
+        return services_of(request).write_bibliography(
+            cited_only=body.cited_only, collection_id=body.collection_id
+        )
 
     # -------------------------------------------------------- conversations
 

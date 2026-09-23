@@ -260,3 +260,61 @@ def test_a_hand_edited_bibliography_is_snapshotted_before_it_is_replaced(
     snapshots = list(services.workspace.iter_history("references.bib"))
     assert snapshots, "the hand-edited file should be recoverable"
     assert "Edited by hand" in snapshots[0].read_text("utf-8")
+
+
+# --- collection filter
+
+
+def _collection(client, name, document_ids):
+    response = client.post(
+        "/api/collections",
+        json={"kind": "project", "name": name, "document_ids": document_ids},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["collection_id"]
+
+
+def test_bibliography_can_be_narrowed_to_a_collection(client, paper_one, paper_two):
+    first = upload(client, "one.pdf", paper_one)["imported"][0]["document"]["document_id"]
+    second = upload(client, "two.pdf", paper_two)["imported"][0]["document"]["document_id"]
+    for document_id in (first, second):
+        wait_for_extraction(client, document_id)
+    collection_id = _collection(client, "Just the first", [first])
+
+    everything = client.get("/api/bibliography").json()
+    scoped = client.get(f"/api/bibliography?collection_id={collection_id}").json()
+
+    assert len(everything["entries"]) == 2
+    assert len(scoped["entries"]) == 1
+    assert scoped["entries"][0]["document_id"] == first
+
+
+def test_an_empty_collection_exports_an_empty_bibliography(client, paper_one):
+    document_id = upload(client, "one.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+    wait_for_extraction(client, document_id)
+    collection_id = _collection(client, "Empty", [])
+
+    scoped = client.get(f"/api/bibliography?collection_id={collection_id}").json()
+
+    # An empty collection means no works, never every work.
+    assert scoped["entries"] == []
+
+
+def test_writing_a_collection_bibliography_stays_idempotent(client, paper_one):
+    document_id = upload(client, "one.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+    wait_for_extraction(client, document_id)
+    collection_id = _collection(client, "Scoped write", [document_id])
+
+    first = client.post(
+        "/api/bibliography", json={"collection_id": collection_id}
+    ).json()
+    second = client.post(
+        "/api/bibliography", json={"collection_id": collection_id}
+    ).json()
+
+    assert first["written"] is True
+    assert second["written"] is False
