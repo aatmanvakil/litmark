@@ -8,12 +8,25 @@
 
 import { useState } from 'preact/hooks'
 
-import { api, type ChangeRecord, type DocumentRecord, type NoteSummary, type SearchHit } from './api'
+import {
+  api,
+  type ChangeRecord,
+  type Collection,
+  type CollectionKind,
+  type DocumentRecord,
+  type NoteSummary,
+  type SearchHit,
+} from './api'
+
+export const UNFILED = '__unfiled__'
 
 export interface SidebarProps {
   documents: DocumentRecord[]
   notes: NoteSummary[]
   changes: ChangeRecord[]
+  collections: Collection[]
+  unfiled: string[]
+  activeCollectionId: string | null
   activeTarget: { kind: string; noteId?: string; documentId?: string }
   onOpenNote: (noteId: string) => void
   onOpenSummary: (documentId: string) => void
@@ -26,6 +39,11 @@ export interface SidebarProps {
   onWriteBibliography: () => Promise<void>
   onUndo: (change: ChangeRecord) => void
   onLoadChanges: () => Promise<void>
+  onSelectCollection: (collectionId: string | null) => void
+  onCreateCollection: (kind: CollectionKind, name: string) => Promise<void>
+  onRenameCollection: (collectionId: string, name: string) => Promise<void>
+  onDeleteCollection: (collectionId: string) => Promise<void>
+  onAssign: (collectionId: string, documentId: string, member: boolean) => Promise<void>
 }
 
 export function Sidebar(props: SidebarProps) {
@@ -36,6 +54,19 @@ export function Sidebar(props: SidebarProps) {
   )
   const [dragging, setDragging] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [assigning, setAssigning] = useState<string | null>(null)
+
+  const active = props.collections.find(
+    (collection) => collection.collection_id === props.activeCollectionId,
+  )
+  const scopeLabel = props.activeCollectionId === UNFILED ? 'Unfiled' : active?.name
+  // A collection filters the list; "Unfiled" is computed from membership.
+  const visible =
+    props.activeCollectionId === null
+      ? props.documents
+      : props.activeCollectionId === UNFILED
+        ? props.documents.filter((d) => props.unfiled.includes(d.document_id))
+        : props.documents.filter((d) => active?.documents.includes(d.document_id))
 
   const runSearch = async (value: string): Promise<void> => {
     setQuery(value)
@@ -46,7 +77,9 @@ export function Sidebar(props: SidebarProps) {
     }
     setSearching(true)
     try {
-      const result = await api.search(value)
+      const serverScope =
+        props.activeCollectionId === UNFILED ? null : props.activeCollectionId
+      const result = await api.search(value, serverScope)
       setHits(result.passages)
       setNoteHits(result.notes)
     } finally {
@@ -128,9 +161,122 @@ export function Sidebar(props: SidebarProps) {
         </section>
       )}
 
+      <section class="collections">
+        <div class="section-head">
+          <h3>Collections</h3>
+          <span class="head-actions">
+            <button
+              type="button"
+              class="link"
+              onClick={() => {
+                const name = window.prompt('Name this project')
+                if (name?.trim()) void props.onCreateCollection('project', name.trim())
+              }}
+            >
+              + Project
+            </button>
+            <button
+              type="button"
+              class="link"
+              onClick={() => {
+                const name = window.prompt('Name this topic')
+                if (name?.trim()) void props.onCreateCollection('topic', name.trim())
+              }}
+            >
+              + Topic
+            </button>
+          </span>
+        </div>
+        {props.activeCollectionId !== null && (
+          <button type="button" class="link scope-clear" onClick={() => props.onSelectCollection(null)}>
+            Show all papers
+          </button>
+        )}
+        {(['project', 'topic'] as CollectionKind[]).map((kind) => {
+          const group = props.collections.filter((collection) => collection.kind === kind)
+          if (group.length === 0) return null
+          return (
+            <div key={kind} class="collection-group">
+              <h4 class="muted">{kind === 'project' ? 'Projects' : 'Topics'}</h4>
+              <ul class="list">
+                {group.map((collection) => (
+                  <li key={collection.collection_id}>
+                    <button
+                      type="button"
+                      class={
+                        props.activeCollectionId === collection.collection_id
+                          ? 'entry active'
+                          : 'entry'
+                      }
+                      onClick={() =>
+                        props.onSelectCollection(
+                          props.activeCollectionId === collection.collection_id
+                            ? null
+                            : collection.collection_id,
+                        )
+                      }
+                    >
+                      <strong>{collection.name}</strong>
+                      <span class="muted">{collection.document_count} papers</span>
+                    </button>
+                    <div class="entry-actions">
+                      <button
+                        type="button"
+                        class="link"
+                        onClick={() => {
+                          const name = window.prompt('Rename', collection.name)
+                          if (name?.trim())
+                            void props.onRenameCollection(collection.collection_id, name.trim())
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        class="link"
+                        onClick={() => {
+                          const ok = window.confirm(
+                            `Remove the ${collection.kind} "${collection.name}"?\n\n` +
+                              'The papers in it are not deleted.',
+                          )
+                          if (ok) void props.onDeleteCollection(collection.collection_id)
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )
+        })}
+        {props.unfiled.length > 0 && (
+          <ul class="list">
+            <li>
+              <button
+                type="button"
+                class={props.activeCollectionId === UNFILED ? 'entry active' : 'entry'}
+                onClick={() =>
+                  props.onSelectCollection(
+                    props.activeCollectionId === UNFILED ? null : UNFILED,
+                  )
+                }
+              >
+                <strong>Unfiled</strong>
+                <span class="muted">{props.unfiled.length} papers</span>
+              </button>
+            </li>
+          </ul>
+        )}
+        {props.collections.length === 0 && (
+          <p class="muted">No projects or topics yet.</p>
+        )}
+      </section>
+
       <section>
         <div class="section-head">
-          <h3>Documents</h3>
+          <h3>{scopeLabel ? `Documents · ${scopeLabel} (${visible.length})` : 'Documents'}</h3>
           <span class="head-actions">
             <button
               type="button"
@@ -155,8 +301,11 @@ export function Sidebar(props: SidebarProps) {
             No papers yet. Drag PDFs here, or use Import.
           </p>
         )}
+        {props.documents.length > 0 && visible.length === 0 && (
+          <p class="muted">No papers in this collection yet.</p>
+        )}
         <ul class="list">
-          {props.documents.map((document) => (
+          {visible.map((document) => (
             <li key={document.document_id}>
               <button
                 type="button"
@@ -172,7 +321,47 @@ export function Sidebar(props: SidebarProps) {
                 <SummaryPreview document={document} />
                 <IngestionStatus document={document} />
               </button>
+              {assigning === document.document_id && (
+                <ul class="assign-popover">
+                  {props.collections.map((collection) => {
+                    const member = collection.documents.includes(document.document_id)
+                    return (
+                      <li key={collection.collection_id}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={member}
+                            onChange={() =>
+                              void props.onAssign(
+                                collection.collection_id,
+                                document.document_id,
+                                !member,
+                              )
+                            }
+                          />
+                          {collection.name}
+                          <span class="muted"> · {collection.kind}</span>
+                        </label>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
               <div class="entry-actions">
+                {props.collections.length > 0 && (
+                  <button
+                    type="button"
+                    class="link"
+                    aria-expanded={assigning === document.document_id}
+                    onClick={() =>
+                      setAssigning(
+                        assigning === document.document_id ? null : document.document_id,
+                      )
+                    }
+                  >
+                    Collections…
+                  </button>
+                )}
                 <button
                   type="button"
                   class="link"

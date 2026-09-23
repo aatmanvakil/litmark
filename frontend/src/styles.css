@@ -1123,3 +1123,40 @@ select {
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* ----------------------------------------------------------- collections */
+
+.sidebar .collection-group h4 {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar .scope-clear {
+  display: block;
+  margin: 0.2rem 0 0.4rem;
+}
+
+.sidebar .assign-popover {
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.4rem 0.5rem;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.sidebar .assign-popover li {
+  margin: 0;
+}
+
+.sidebar .assign-popover label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.15rem 0;
+  font-size: 0.82rem;
+  cursor: pointer;
+}

@@ -104,5 +104,6 @@ const KNOWN_EVENTS = [
   'message_added',
   'document_updated',
   'job_updated',
+  'collection_updated',
   'ping',
 ]

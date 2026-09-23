@@ -109,8 +109,23 @@ export interface ProjectState {
   agent: AgentStatus
   documents: DocumentRecord[]
   notes: NoteSummary[]
+  collections: Collection[]
+  unfiled: string[]
   conversations: ConversationSummary[]
   latest_seq: number
+}
+
+export type CollectionKind = 'project' | 'topic'
+
+export interface Collection {
+  collection_id: string
+  kind: CollectionKind
+  name: string
+  description?: string | null
+  documents: string[]
+  document_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface PageRecord {
@@ -312,9 +327,38 @@ export const api = {
       { method: 'DELETE' },
     ),
 
-  search: (query: string) =>
+  search: (query: string, collectionId?: string | null) =>
     request<{ query: string; passages: SearchHit[]; notes: { note_id: string; title: string; snippet: string }[] }>(
-      `/search?q=${encodeURIComponent(query)}`,
+      `/search?q=${encodeURIComponent(query)}` +
+        (collectionId ? `&collection_id=${encodeURIComponent(collectionId)}` : ''),
+    ),
+
+  collections: () =>
+    request<{ collections: Collection[]; unfiled: string[] }>('/collections'),
+  createCollection: (kind: CollectionKind, name: string, document_ids: string[] = []) =>
+    request<Collection>('/collections', {
+      method: 'POST',
+      body: JSON.stringify({ kind, name, document_ids }),
+    }),
+  renameCollection: (id: string, name: string) =>
+    request<Collection>(`/collections/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteCollection: (id: string) =>
+    request<{ deleted: string; documents_released: number }>(
+      `/collections/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  addToCollection: (id: string, document_ids: string[]) =>
+    request<Collection>(`/collections/${encodeURIComponent(id)}/documents`, {
+      method: 'POST',
+      body: JSON.stringify({ document_ids }),
+    }),
+  removeFromCollection: (id: string, documentId: string) =>
+    request<{ collection_id: string; document_id: string; removed: boolean }>(
+      `/collections/${encodeURIComponent(id)}/documents/${encodeURIComponent(documentId)}`,
+      { method: 'DELETE' },
     ),
 
   listReferences: (documentId?: string) =>

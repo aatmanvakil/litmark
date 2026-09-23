@@ -224,3 +224,53 @@ def test_ids_are_allocated_centrally(project):
 def test_get_missing_collection_raises(project):
     with pytest.raises(NotFound):
         CollectionStore(project).get("col-001")
+
+
+# ------------------------------------------------------- collection-scoped search
+
+
+def test_search_narrows_to_the_active_collection(client, paper_one, paper_two):
+    inside = _import(client, paper_one, "one.pdf")
+    outside = _import(client, paper_two, "two.pdf")
+    for document_id in (inside, outside):
+        wait_for_extraction(client, document_id)
+    created = _create(client, "project", "Scoped", document_ids=[inside])
+
+    everywhere = client.get("/api/search?q=mobility").json()["passages"]
+    scoped = client.get(
+        f"/api/search?q=mobility&collection_id={created['collection_id']}"
+    ).json()["passages"]
+
+    assert {hit["document_id"] for hit in everywhere} == {inside, outside}
+    assert {hit["document_id"] for hit in scoped} == {inside}
+
+
+def test_search_in_an_empty_collection_finds_nothing(client, paper_one):
+    document_id = _import(client, paper_one)
+    wait_for_extraction(client, document_id)
+    created = _create(client, "project", "Empty")
+
+    scoped = client.get(
+        f"/api/search?q=mobility&collection_id={created['collection_id']}"
+    ).json()
+
+    # An empty collection means no papers, never every paper.
+    assert scoped["passages"] == []
+
+
+def test_search_intersects_collection_with_explicit_document_filter(
+    client, paper_one, paper_two
+):
+    inside = _import(client, paper_one, "one.pdf")
+    outside = _import(client, paper_two, "two.pdf")
+    for document_id in (inside, outside):
+        wait_for_extraction(client, document_id)
+    created = _create(client, "project", "Intersect", document_ids=[inside])
+
+    scoped = client.get(
+        f"/api/search?q=mobility&collection_id={created['collection_id']}"
+        f"&document_id={outside}"
+    ).json()
+
+    # Asking for a non-member while scoped yields nothing, not the non-member.
+    assert scoped["passages"] == []
