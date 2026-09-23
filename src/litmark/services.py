@@ -17,6 +17,7 @@ from .agent.fake import FakeBackend
 from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
 from .bibliography import Bibliography, build_bibliography
+from .collections import CollectionStore
 from .db import Database
 from .documents import DocumentStore
 from .events import DOCUMENT_UPDATED, EventBus
@@ -44,6 +45,7 @@ class Services:
             max_upload_bytes=int(float(ingestion.get("max_upload_mb", 64)) * 1024 * 1024),
         )
         self.references = ReferenceStore(workspace)
+        self.collections = CollectionStore(workspace)
         self.tools = ProjectTools(workspace, self.documents, self.references, self.db)
         self.auto_summary = bool(agent_settings.get("auto_summary", True))
 
@@ -160,6 +162,8 @@ class Services:
             "agent": self.agent_availability().to_json(),
             "documents": documents,
             "notes": [note.to_json(include_text=False) for note in self.workspace.list_notes()],
+            "collections": [c.api_json() for c in self.collections.list()],
+            "unfiled": self.collections.unfiled([d["document_id"] for d in documents]),
             "conversations": self.runner.list_conversations(),
             "latest_seq": self.db.latest_seq(),
         }

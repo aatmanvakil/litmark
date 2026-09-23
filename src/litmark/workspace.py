@@ -26,6 +26,7 @@ PROJECT_FILE = "project.toml"
 DOCUMENTS_DIR = "documents"
 NOTES_DIR = "notes"
 REFERENCES_FILE = "references.json"
+COLLECTIONS_FILE = "collections.json"
 BIBLIOGRAPHY_FILE = "references.bib"
 STATE_DIR = ".research"
 HISTORY_DIR = f"{STATE_DIR}/history"
@@ -142,6 +143,10 @@ class Workspace:
         return self.root / REFERENCES_FILE
 
     @property
+    def collections_file(self) -> Path:
+        return self.root / COLLECTIONS_FILE
+
+    @property
     def bibliography_file(self) -> Path:
         """The generated BibTeX file; regenerated, but an ordinary project file."""
         return self.root / BIBLIOGRAPHY_FILE
@@ -204,6 +209,11 @@ class Workspace:
                 workspace.references_file,
                 '{\n  "schema_version": 1,\n  "references": {}\n}\n',
             )
+        if not workspace.collections_file.exists():
+            atomic_write_text(
+                workspace.collections_file,
+                '{\n  "schema_version": 1,\n  "collections": {}\n}\n',
+            )
         welcome = workspace.notes_dir / "welcome.md"
         if not welcome.exists():
             atomic_write_text(welcome, _WELCOME_NOTE)
@@ -223,6 +233,10 @@ class Workspace:
         if not self.references_file.exists():
             atomic_write_text(
                 self.references_file, '{\n  "schema_version": 1,\n  "references": {}\n}\n'
+            )
+        if not self.collections_file.exists():
+            atomic_write_text(
+                self.collections_file, '{\n  "schema_version": 1,\n  "collections": {}\n}\n'
             )
         return self
 
