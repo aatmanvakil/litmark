@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Check the workspace and agent setup.")
     doctor.add_argument("path", type=Path, nargs="?", default=Path.cwd())
 
+    migrate = sub.add_parser(
+        "migrate",
+        help="Move stored PDFs into Papers/ under their canonical names.",
+    )
+    migrate.add_argument("path", type=Path, nargs="?", default=Path.cwd())
+    migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would move, and change nothing.",
+    )
+    migrate.add_argument(
+        "--undo",
+        action="store_true",
+        help="Put every PDF back under documents/<id>/original.pdf.",
+    )
+
     return parser
 
 
@@ -85,12 +101,68 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_serve(args)
         if args.command == "doctor":
             return cmd_doctor(args)
+        if args.command == "migrate":
+            return cmd_migrate(args)
     except WorkspaceError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
     return 2
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    from .documents import DocumentStore
+    from .migration import is_cloud_synced, migrate, undo, verify
+
+    workspace = Workspace(args.path).open()
+    store = DocumentStore(workspace)
+
+    if is_cloud_synced(workspace.root) and not args.dry_run:
+        # Not a hard block — the user may know their sync client is paused.
+        print(
+            "warning: this project is inside a cloud-synced folder.\n"
+            "  Pause syncing before migrating. A sync landing mid-run can\n"
+            "  duplicate files or leave conflicted copies behind.\n"
+        )
+
+    if args.undo:
+        report = undo(workspace, store)
+        for item in report.moved:
+            print(f"  restored {item['document_id']}")
+        print(f"Restored {len(report.moved)} PDF(s) to documents/<id>/original.pdf.")
+    else:
+        report = migrate(workspace, dry_run=args.dry_run, documents=store)
+        if not report.hardlinks and not args.dry_run:
+            print("note: hardlinks are unavailable here; copying and verifying instead.")
+        for item in report.moved:
+            print(f"  {item['document_id']} -> Papers/{item['to']}  ({item['how']})")
+        for document_id in report.missing:
+            print(f"  {document_id}: no PDF found, left alone")
+        verb = "Would move" if args.dry_run else "Moved"
+        print(
+            f"{verb} {len(report.moved)} PDF(s); "
+            f"{len(report.already)} already in Papers/."
+        )
+
+    for failure in report.failed:
+        print(f"error: {failure['document_id']}: {failure['error']}", file=sys.stderr)
+
+    if not args.dry_run:
+        result = verify(workspace, store)
+        if result["ok"]:
+            print(f"Verified {len(result['verified'])} document(s) against their hashes.")
+        else:
+            for problem in result["problems"]:
+                print(
+                    f"error: {problem['document_id']}: {problem['problem']}",
+                    file=sys.stderr,
+                )
+            return 1
+        if not args.undo:
+            print("Undo with: litmark migrate --undo " + str(args.path))
+
+    return 0 if report.ok else 1
 
 
 def cmd_init(args: argparse.Namespace) -> int:

@@ -197,13 +197,13 @@ class DocumentStore:
             candidate = self._workspace.resolve_inside(pointer)
             if candidate.is_file():
                 return candidate, "ok"
-            adopted = self._adopt_by_hash(document)
+            adopted = self.adopt_by_hash(document)
             if adopted is not None:
                 return adopted, "relinked"
         legacy = self.legacy_pdf_path(document_id)
         if legacy.is_file():
             return legacy, "legacy"
-        adopted = self._adopt_by_hash(document)
+        adopted = self.adopt_by_hash(document)
         if adopted is not None:
             return adopted, "relinked"
         return None, "missing"
@@ -221,7 +221,7 @@ class DocumentStore:
             )
         return path
 
-    def _adopt_by_hash(self, document: Document) -> Path | None:
+    def adopt_by_hash(self, document: Document) -> Path | None:
         """Claim a Papers/ file whose bytes are this document's.
 
         A file renamed outside the app keeps the user's spelling rather than
