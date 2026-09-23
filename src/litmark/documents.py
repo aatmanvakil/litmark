@@ -24,7 +24,7 @@ from .extraction import (
     normalize_text,
     pdf_metadata,
 )
-from .naming import YEAR_FROM_CREATIONDATE
+from .naming import YEAR_CONFIRMED, YEAR_FROM_CREATIONDATE
 from .workspace import Workspace, atomic_write_bytes, atomic_write_text, revision_of, sha256_bytes, utcnow
 
 log = logging.getLogger(__name__)
@@ -217,6 +217,41 @@ class DocumentStore:
             json.dumps(document.to_json(), indent=2, ensure_ascii=False) + "\n",
         )
         return document
+
+    def update_metadata(
+        self,
+        document_id: str,
+        *,
+        title: str | None = None,
+        authors: str | None = None,
+        year: int | None = None,
+        doi: str | None = None,
+        clear: tuple[str, ...] = (),
+    ) -> Document:
+        """Correct a document's bibliographic metadata.
+
+        A year set here is a *publication* year stated by a person, so it is
+        marked confirmed and becomes usable in the canonical filename. Passing
+        a field name in ``clear`` unsets it, which an empty string cannot do.
+        """
+        with self._lock:
+            document = self.get(document_id)
+            if title is not None:
+                document.title = title.strip() or None
+            if authors is not None:
+                document.authors = authors.strip() or None
+            if year is not None:
+                if not 1000 <= year <= 2999:
+                    raise InvalidInput(f"{year} is not a plausible publication year.")
+                document.year = year
+                document.year_source = YEAR_CONFIRMED
+            for name in clear:
+                if name == "year":
+                    document.year = None
+                    document.year_source = None
+                elif name in {"title", "authors"}:
+                    setattr(document, name, None)
+            return self.save(document)
 
     def next_id(self) -> str:
         with self._lock:

@@ -187,3 +187,10 @@ def test_collisions_are_normalization_insensitive():
     assert nfc != nfd  # different strings...
     assert comparable(nfc) == comparable(nfd)  # ...one file
     assert unique_name(nfd, {comparable(nfc)}) != nfd
+
+
+def test_et_al_keeps_its_period():
+    """A trailing dot is stripped from the stem, but "et al." is not the stem."""
+    result = name(authors="A One and B Two and C Three and D Four")
+
+    assert result.startswith("One et al. (")
