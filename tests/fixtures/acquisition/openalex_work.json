@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "doi": "https://doi.org/10.1234/exchange.2021",
+      "display_name": "Exchange Rate Disconnect in General Equilibrium",
+      "publication_year": 2021,
+      "primary_location": {"source": {"display_name": "Journal of Political Economy"}},
+      "authorships": [
+        {"author": {"display_name": "Anna Müller"}},
+        {"author": {"display_name": "Bo Lindqvist"}}
+      ]
+    }
+  ]
+}

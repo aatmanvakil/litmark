@@ -1,0 +1,16 @@
+{
+  "message": {
+    "items": [
+      {
+        "DOI": "10.1234/exchange.2021",
+        "title": ["Exchange Rate Disconnect in General Equilibrium"],
+        "container-title": ["Journal of Political Economy"],
+        "issued": {"date-parts": [[2021, 4]]},
+        "author": [
+          {"given": "Anna", "family": "Müller"},
+          {"given": "Bo", "family": "Lindqvist"}
+        ]
+      }
+    ]
+  }
+}
