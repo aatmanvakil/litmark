@@ -7,7 +7,7 @@ that can search the project and edit its files.
 **Import papers → ask questions → write a sourced note → inspect the evidence → refine the note.**
 
 Everything you write stays as ordinary files in a movable project directory:
-`notes/*.md`, `documents/<id>/original.pdf`, `references.json`. The application
+`notes/*.md`, `Papers/<Author (Year) – Title>.pdf`, `references.json`. The application
 is a convenient view onto those files, not their owner.
 
 ## Install
@@ -89,12 +89,13 @@ and the interface says so plainly.
 | Path | Purpose |
 | --- | --- |
 | `project.toml` | Schema version and non-secret project settings. |
-| `documents/<id>/original.pdf` | Original immutable PDF. |
+| `Papers/<Author (Year) – Title>.pdf` | The one canonical PDF per paper. |
 | `documents/<id>/metadata.json` | Identity, hash, filename, title, page count, status. |
 | `documents/<id>/pages.json` | Per-page text, character geometry, offset mapping. |
 | `documents/<id>/summary.md` | Editable, cited summary. |
 | `notes/*.md` | User and agent notes. |
 | `references.json` | Versioned source registry. |
+| `collections.json` | Projects and topics, and which papers belong to each. |
 | `references.bib` | Generated BibTeX bibliography of the imported documents. |
 | `.research/state.sqlite` | Conversations, events, jobs, run state, change log. |
 | `.research/history/` | Previous file contents, for review and undo. |
@@ -165,7 +166,7 @@ without having checked anything.
 
 v0.1 covers ingestion of text-based PDFs, cited summaries, Markdown live-preview
 editing, PDF evidence with highlights, chat with one agent backend, and manual
-references. Deferred: OCR, URL downloads, Word/HTML ingestion, Zotero
+references. Deferred: OCR, Word/HTML ingestion, Zotero
 integration, semantic search, multiple agent providers, arbitrary analysis
 execution, multi-user collaboration, full mobile editing, and public hosting.
 

@@ -58,7 +58,7 @@ Design for a laptop browser: quiet typography, readable text widths, resizable p
 
 | Area | Contents and behavior |
 | --- | --- |
-| Project sidebar | Documents and Notes sections, search, import button, new-note action, bibliography export; each document shows title, summary preview, and ingestion status. |
+| Project sidebar | Collections, Documents and Notes sections, search, import button, new-note action, bibliography export; each document shows title, summary preview, and ingestion status. |
 | Main editor | The current note or document summary, using Markdown live preview. |
 | Right source panel | PDF viewer, filename/title, page controls, zoom, search, and evidence highlights. The document scrolls continuously rather than a page at a time, and every registered mark in it is drawn, not only the one just opened. |
 | Chat drawer | Persistent conversation, context attachments, streaming replies, stop button, and expandable tool activity. |
@@ -178,11 +178,72 @@ A citation points at a passage; a bibliography lists the works those passages ar
 
 Citation keys are surname, year, and first meaningful title word (`researcher2016mobility`), with a letter suffix when two works would collide. With no author the title word leads instead (`mobility2026`), since a key beginning with a digit reads badly and some tooling dislikes it. Given neither an author nor a year, the document ID is the key: one resting only on a title that was itself guessed from the first line of a PDF is neither stable nor unique.
 
-Entries carry only what the document supplies — author, title, year, and the project-relative path of the original PDF — and use `@misc`, because an imported PDF does not say where it was published. Missing metadata is omitted and reported with the export, never filled in from general knowledge. Producers' placeholder values are treated as missing for the same reason: an entry crediting "anonymous" is worse than one that says the author is unknown, and the title rule in §5 already rejects "untitled". A reference whose document has been deleted produces a warning rather than an entry.
+Entries carry only what the document supplies — author, title, year, and the project-relative path of the canonical PDF — and use `@misc`, because an imported PDF does not say where it was published. Missing metadata is omitted and reported with the export, never filled in from general knowledge. Producers' placeholder values are treated as missing for the same reason: an entry crediting "anonymous" is worse than one that says the author is unknown, and the title rule in §5 already rejects "untitled". A reference whose document has been deleted produces a warning rather than an entry.
 
-The file is derived but is an ordinary project file, so regeneration must not destroy work: the generated text is deterministic, an unchanged bibliography is not rewritten at all, and a `.bib` edited by hand is snapshotted into the history directory before it is replaced. An export can be narrowed to the works a note or summary actually cites — what a paper's reference list should contain — and covers every imported document by default.
+The file is derived but is an ordinary project file, so regeneration must not destroy work: the generated text is deterministic, an unchanged bibliography is not rewritten at all, and a `.bib` edited by hand is snapshotted into the history directory before it is replaced. An export can be narrowed to the works a note or summary actually cites — what a paper's reference list should contain — or to the members of one collection, and covers every imported document by default. The two narrowings compose.
 
-Reference-manager integration (Zotero, CSL styles, venue metadata lookup) remains out of scope; this is a plain file the user can hand to LaTeX or import elsewhere.
+Reference-manager integration (Zotero, CSL styles) remains out of scope; this is a plain file the user can hand to LaTeX or import elsewhere. Venue metadata lookup is **no longer deferred** — see §6a — but it informs acquisition and the canonical filename, and does not change what a `@misc` entry carries.
+
+## 6a. Acquiring a paper
+
+Typing a title, a citation or a DOI resolves candidate works, and the user
+chooses one. This is the first feature that reaches the internet at all, so
+the rules are narrow and stated here rather than left to the implementation.
+
+**Resolution never writes a file.** Searching, ranking and displaying
+candidates produce no document, no `Papers/` entry, no metadata and no
+reference. Only a confirmed download imports anything. Abandoning the dialog
+must leave the project byte-identical.
+
+Each provider has exactly one role, and only two may ever yield a URL the
+server will fetch:
+
+| Provider | Role | May yield a fetchable URL? |
+| --- | --- | --- |
+| Crossref | Metadata only | No |
+| OpenAlex | Metadata only | No |
+| Unpaywall | Verified open-access locations | Yes |
+| arXiv (official API) | arXiv-hosted PDFs | Yes |
+
+There is no field for pasting a download link: a fetchable URL must have come
+from Unpaywall or the arXiv API during the current resolution. A URL the user
+already has is handled by ordinary upload, where the bytes arrive through the
+normal path. The server never fetches an HTML page looking for a PDF, from any
+host, so `doi.org` is not a download source — it is a redirector, and
+following it to a publisher's landing page is exactly the scraping this
+forbids.
+
+Candidates are shown with title, authors, year, journal, DOI, version type and
+source URL. Version type is one of *published*, *accepted manuscript* or
+*submitted preprint*, and a lawfully retrievable published version ranks
+first, then an accepted manuscript, then a preprint. Ranking only orders the
+list; it never chooses.
+
+**Paywalls are never bypassed.** No credentials, cookies, `Authorization`
+header or institutional proxy, ever. A version that is not lawfully
+retrievable is shown as a link the user may open themselves, and the flow ends
+in manual upload with the confirmed metadata pre-filled. The licence a
+provider reports is displayed verbatim and never interpreted as permission
+beyond what it says.
+
+Confirmation names the host that will actually be contacted, taken from the
+URL being fetched — not a generic redirector — so an unexpected one is visible
+before consenting. A redirect to a different host stops and re-confirms rather
+than quietly following somewhere the user never approved.
+
+A fetch is hardened at one chokepoint: HTTPS only, a bounded redirect chain
+re-validated at every hop, wall-clock timeouts, a streamed size cap, and a
+body that must be `application/pdf` *and* begin with `%PDF-`. Addresses are
+resolved once and the connection is pinned to the address that was checked,
+with the hostname kept for TLS — checking a name and then letting the client
+resolve it again leaves a window in which the answer can change. Private,
+loopback and link-local addresses are refused at every hop.
+
+Confirmed metadata seeds the canonical filename and the DOI, replacing what
+the PDF's own `/Info` dictionary guessed — this is how a name stops saying
+`n.d.` Duplicates are caught before download by DOI and after download by
+content hash, and identical bytes resolve to the existing document rather than
+writing a second file.
 
 ## 7. Chat and the coding agent
 
@@ -247,6 +308,56 @@ A clean editor buffer refreshes when an agent edit lands. A dirty buffer remains
 
 Maintain file snapshots and an edit log for undo. Undo is itself version-checked so it cannot remove later human edits. Cancellation preserves already committed edits, identifies them in the conversation, and discards uncommitted proposals unless retained for review. Arbitrary external editors cannot be made fully transactional; detect their changes and preserve recovery snapshots.
 
+## 8a. Collections and scoped conversations
+
+A paper usually belongs to more than one piece of work at once, so grouping is
+a classification, never a second copy of the PDF. One type carries both
+user-facing kinds — a **project** is a piece of work being written, a **topic**
+is a subject — and the interface supplies the vocabulary. Note that "project"
+in this sense is a grouping *inside* a workspace, not the workspace directory
+the CLI calls a project.
+
+Membership lives in `collections.json`, a versioned registry beside
+`references.json`: an ordinary, hand-editable file that travels with the
+movable project directory. The collection holds its member list rather than
+each document naming its collections, so renaming or deleting one is a single
+edit to a single file instead of a non-atomic rewrite of every document it
+touched. A name is unique within a kind, so a project and a topic may share
+one. The kind is immutable; reclassifying is delete and create, so a rename
+can never silently move papers between kinds. "Unfiled" is computed from the
+member lists at read time, never stored.
+
+Removing a paper from a collection, or removing the collection itself, never
+deletes a paper. Deleting a *paper* prunes its memberships outright rather than
+leaving a tombstone: a reference is preserved on delete because it carries
+irreplaceable quote geometry, whereas a membership carries nothing beyond the
+pair.
+
+Chat can be scoped to one collection, and the scope is enforced by the server,
+not suggested to the model. Attached context is advisory by design — it is
+rendered into the prompt as text — so a scope expressed that way would be a
+request the model could ignore. Enforcement therefore sits at the tool
+dispatch boundary, which every call passes through, including the HTTP
+thread's. Every tool that addresses a document is classified: reads, writes
+and the reference resolver alike refuse a document outside the scope, note
+writers are checked through their `source:` citations because a citation
+reaches a document, and the document listing is clipped with a count of what
+was withheld. A tool belonging to no category fails a test, so the next one
+cannot be added unclassified.
+
+Membership is resolved server-side from the registry when a message is
+submitted, never taken from the request body, so a caller cannot widen its own
+scope. The model has no scope argument at all: it can report what was excluded
+and ask, and only the user clears the scope. The collection listing is
+deliberately never clipped, so the model can name the collection it is asking
+to leave. Human PDF selection is never scoped — that is a person pointing at a
+passage, not the agent reaching for a document.
+
+Scoping changes the reach of the next message within the ongoing conversation.
+It does **not** switch transcripts: there is one conversation per workspace,
+and separately saved histories per collection are deferred. The interface must
+not imply otherwise.
+
 ## 9. Project storage
 
 Keep user material as files in a movable project directory. Proposed layout:
@@ -254,18 +365,55 @@ Keep user material as files in a movable project directory. Proposed layout:
 | Path | Purpose |
 | --- | --- |
 | `project.toml` | Schema version and non-secret project settings. |
-| `documents/<id>/original.pdf` | Original immutable PDF. |
-| `documents/<id>/metadata.json` | Identity, hash, original filename, title, page count, ingestion status. |
+| `Papers/<Author (Year) – Title>.pdf` | The one canonical PDF for a paper, under a readable name. |
+| `documents/<id>/metadata.json` | Identity, hash, original filename, title, page count, ingestion status, and the pointer to the canonical PDF. |
 | `documents/<id>/pages.json` | Per-page text, character geometry, offset mapping, extraction version/warnings. |
 | `documents/<id>/summary.md` | Editable, cited summary. |
 | `notes/*.md` | User and agent notes. |
 | `references.json` | Versioned source registry. |
+| `collections.json` | Versioned registry of projects and topics, and which papers belong to each. |
 | `references.bib` | Generated BibTeX bibliography of the imported documents. |
 | `.research/state.sqlite` | Conversations, durable events, jobs, run state, and change log. |
 | `.research/history/` | Previous file contents for review and undo. |
 | `.research/runs/` | Staged edits and run diagnostics. |
 
+Only the PDF lives under `Papers/`. Everything derived from it stays under `documents/<id>/`, because `<id>` is the identity that references, change records and the extraction cache are keyed by — a readable filename is for people, and people rename things. A document whose canonical PDF has been renamed outside the application is re-linked by content hash and keeps the name its owner chose; one whose bytes are gone reports a recoverable missing source and keeps its notes, references and summary. A project created before `Papers/` existed keeps working from the old location, and `litmark migrate` moves it across explicitly — opening a project never does.
+
 The database stores application state; it is not the sole home of notes or source evidence. Document copies, notes, and references must remain usable outside the app. Export chat transcripts as Markdown or JSON on request. Rebuildable indexes may live in SQLite. Register references before writing links that use them; unused registry entries are harmless after interrupted writes.
+
+### Canonical filenames
+
+A stored PDF is named for the work, not for its ID:
+
+    Author, Author, Author (Year) – Title.pdf
+    FirstAuthor et al. (Year) – Title.pdf
+
+Four or more authors collapse to the first plus *et al.* No segment is ever
+omitted: an unknown author reads `Unknown`, and an unknown year `n.d.`
+
+**A year appears only once it has been confirmed by a person.** What a PDF
+reports is its `/CreationDate` year — when the file was produced, which is
+frequently not when the work was published — so writing it into a filename
+would assert something the document never said. The provenance is recorded,
+and the name says `n.d.` until someone corrects it. Correcting title, authors
+or year renames the file and snapshots the previous name into the history
+directory.
+
+The en dash separator is kept rather than folded to a hyphen: only `/` and NUL
+are illegal on the target filesystems, so substituting it would make the name
+a lie about itself. It does mean every canonical name is outside Latin-1, and
+the download header must stay RFC 6266 with an ASCII fallback — an ordinary
+header value encoded as Latin-1 raises rather than serving.
+
+Collisions compare case-folded NFC names against both the directory and the
+recorded pointers, because APFS is case- and normalisation-insensitive while
+HFS+ stores NFD: two spellings that look different can be one file, and what
+is on disk cannot be trusted to tell them apart. A colliding name gains
+` (2)`. Titles are truncated to a byte budget, not a character count.
+
+A PDF sitting in `Papers/` that no document points at is offered for explicit
+import and never claimed silently — a stray file is as likely to be a sync
+artefact as a paper.
 
 ## 10. Proposed implementation
 
@@ -299,7 +447,7 @@ Build frontend assets in release CI, then include them in both the wheel and sou
 
 Use a `[project.scripts]` entry for the launch command and optional dependencies for the agent adapter, following the [Python packaging guide](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/). Pin and test a compatible release dependency set. Publish dependency licenses with the distribution.
 
-The release gate is installation from the actual built package in a clean environment without a frontend toolchain. Opening notes and PDFs must work offline after installation; agent requests require the configured provider connection.
+The release gate is installation from the actual built package in a clean environment without a frontend toolchain. Opening notes and PDFs must work offline after installation; agent requests require the configured provider connection, and paper acquisition (§6a) requires a network connection but is never on the path of reading, writing, or citing. With no network at all, everything except acquisition behaves exactly as before, and acquisition says plainly that it cannot reach its providers.
 
 ### Local server boundaries
 
@@ -318,7 +466,7 @@ The target application includes ingestion, summaries, live-preview editing, PDF 
 
 Prototype the live-preview cursor behavior and quote-to-PDF geometry early. For a short class, provide the shell and editor integration as starter code and let students build a complete document-to-agent-to-note workflow. Building the full application from an empty repository is a larger exercise.
 
-Deferred: OCR, document URL downloads, Word/HTML ingestion, Zotero and other reference-manager integration, semantic search, multiple agent providers, arbitrary analysis execution, multi-user collaboration, full mobile editing, complex tables, and public hosting. Keep extension points small rather than building a plugin framework first.
+Deferred: OCR, Word/HTML ingestion, Zotero and other reference-manager integration, semantic search, multiple agent providers, arbitrary analysis execution, multi-user collaboration, full mobile editing, complex tables, and public hosting. Document URL downloads were deferred and are **now in scope**, narrowly and under the rules in §6a: only a lawful open-access location named by a metadata provider, only after explicit confirmation. Keep extension points small rather than building a plugin framework first.
 
 ## 12. Acceptance criteria
 
@@ -337,6 +485,14 @@ Deferred: OCR, document URL downloads, Word/HTML ingestion, Zotero and other ref
 | A11 | Without provider credentials, notes and PDFs remain usable and summaries/chat clearly indicate configuration is needed. |
 | A12 | A malformed, encrypted, or scanned PDF reports its processing limitation and leaves other imports usable. |
 | A13 | Export a bibliography for the imported papers: one entry per document with a usable key, page locators in the `\cite` commands rather than the entries, omitted-and-reported fields where the PDF supplies no author or year, and a second export that rewrites nothing. |
+| A14 | Create a project and a topic, assign one paper to both, and restart; both classifications and the shared membership survive, and `collections.json` is readable and hand-editable. |
+| A15 | Delete a collection, then a paper belonging to two; no PDF, summary or reference is lost, and the surviving memberships are correct. |
+| A16 | Scope chat to a collection and ask for something only a non-member holds. No non-member page text, summary text or resolved reference reaches any tool result, and the agent cannot widen the scope itself — only clearing it does. |
+| A17 | Import a paper: exactly one PDF exists, under `Papers/<Author (n.d.) – Title>.pdf`, and `documents/<id>/` holds only derived files. Confirm a publication year and the file is renamed, with the previous name recoverable. |
+| A18 | Migrate a project created before `Papers/`: every PDF is reachable, none duplicated or lost, a second run does nothing, and `--undo` restores the original layout byte for byte. Opening a project never migrates. |
+| A19 | Rename a canonical PDF outside the application: the document re-links by content hash and keeps the chosen name. Delete it: the document reports a recoverable missing source and keeps its notes and references. |
+| A20 | Resolve a DOI and abandon the dialog: nothing whatever is written. Confirm one: exactly one canonical PDF is stored, named from the confirmed metadata. |
+| A21 | A paywalled-only work offers a link and manual upload, and the server issues no request to it. A redirect to a private address, an over-long redirect chain, an oversized body, or a body that is not a PDF is refused and imports nothing. |
 
 Use a small deterministic fixture corpus for geometry, references, and conflicts; use a fake adapter only for reproducible UI/event tests. A release still requires at least one actual provider-backed end-to-end run. Test package installation, not just the development server.
 
