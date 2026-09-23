@@ -24,6 +24,7 @@ SCHEMA_VERSION = 1
 
 PROJECT_FILE = "project.toml"
 DOCUMENTS_DIR = "documents"
+PAPERS_DIR = "Papers"
 NOTES_DIR = "notes"
 REFERENCES_FILE = "references.json"
 COLLECTIONS_FILE = "collections.json"
@@ -143,6 +144,11 @@ class Workspace:
         return self.root / REFERENCES_FILE
 
     @property
+    def papers_dir(self) -> Path:
+        """The one canonical PDF per paper, under a readable name."""
+        return self.root / PAPERS_DIR
+
+    @property
     def collections_file(self) -> Path:
         return self.root / COLLECTIONS_FILE
 
@@ -243,6 +249,10 @@ class Workspace:
     def _ensure_dirs(self) -> None:
         for path in (
             self.documents_dir,
+            # Creating an empty directory overwrites nothing, so this is safe
+            # on open. Moving existing PDFs into it is a separate, explicit
+            # command.
+            self.papers_dir,
             self.notes_dir,
             self.state_dir,
             self.history_dir,

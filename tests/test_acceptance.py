@@ -695,8 +695,11 @@ def test_a12_a_unicode_filename_still_serves_its_pdf(client, paper_one):
     assert response.content[:5] == b"%PDF-"
     disposition = response.headers["content-disposition"]
     disposition.encode("latin-1")  # the exact operation that used to raise
-    assert 'filename="IM2021 Exchange Rate Disconnect in General Equilibrium.pdf"' in disposition
-    assert "filename*=UTF-8''IM2021%E2%80%93" in disposition
+    # The served name is now the canonical one, whose separator is itself an
+    # en dash — so this path exercises the latin-1 hazard on every download.
+    assert "IM2021 Exchange Rate Disconnect in General Equilibrium" in disposition
+    assert "filename*=UTF-8''" in disposition
+    assert "%E2%80%93" in disposition  # the en dash, percent-encoded
 
 
 def test_a12_a_latin1_representable_filename_is_not_mojibaked(client, paper_one):
@@ -710,8 +713,8 @@ def test_a12_a_latin1_representable_filename_is_not_mojibaked(client, paper_one)
 
     assert response.status_code == 200, response.text
     disposition = response.headers["content-disposition"]
-    assert 'filename="Cafe.pdf"' in disposition
-    assert "filename*=UTF-8''Caf%C3%A9.pdf" in disposition
+    assert 'filename="Unknown (n.d.) Cafe.pdf"' in disposition
+    assert "Caf%C3%A9.pdf" in disposition
     # The bare latin-1 byte is what a UTF-8 client used to choke on.
     assert "é" not in disposition
     assert b"\xe9" not in disposition.encode("latin-1")
@@ -724,8 +727,10 @@ def test_a12_a_filename_with_no_ascii_falls_back(client, paper_one):
 
     disposition = client.get(f"/api/documents/{document_id}/pdf").headers["content-disposition"]
 
-    assert 'filename="document.pdf"' in disposition
-    assert "filename*=UTF-8''%E4%B8%AD%E6%96%87" in disposition
+    # Nothing of the title survives the ASCII fold, so the fallback is the
+    # rest of the canonical name; the true name rides in filename*.
+    assert 'filename="Unknown (n.d.).pdf"' in disposition
+    assert "%E4%B8%AD%E6%96%87" in disposition
 
 
 # ------------------------------------------------------------------ A13

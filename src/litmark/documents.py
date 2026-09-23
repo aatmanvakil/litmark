@@ -62,6 +62,10 @@ class Document:
     page_count: int | None = None
     extraction: dict[str, Any] = field(default_factory=dict)
     summary: dict[str, Any] = field(default_factory=dict)
+    # Where the canonical PDF lives, as a project-relative POSIX path. A dict
+    # rather than a bare string so it can carry provenance later. Absent means
+    # a document stored before Papers/ existed; see resolve_pdf.
+    pdf: dict[str, Any] = field(default_factory=dict)
 
     @property
     def display_title(self) -> str:
@@ -103,6 +107,7 @@ class Document:
             "page_count": self.page_count,
             "extraction": self.extraction,
             "summary": self.summary,
+            "pdf": self.pdf,
         }
 
     def api_json(self, *, summary_text: str | None = None) -> dict[str, Any]:
@@ -111,6 +116,7 @@ class Document:
         payload["display_title"] = self.display_title
         payload["searchable"] = self.searchable
         payload["canonical_name"] = self.canonical_name
+        payload["pdf_path"] = self.pdf.get("path")
         if summary_text is not None:
             payload["summary_text"] = summary_text
             payload["summary_revision"] = revision_of(summary_text)
@@ -129,6 +135,7 @@ class Document:
             year=data.get("year"),
             year_source=data.get("year_source"),
             page_count=data.get("page_count"),
+            pdf=data.get("pdf") or {},
             extraction=data.get("extraction") or {},
             summary=data.get("summary") or {},
         )
@@ -168,8 +175,141 @@ class DocumentStore:
     def dir_for(self, document_id: str) -> Path:
         return self._workspace.document_dir(document_id)
 
-    def pdf_path(self, document_id: str) -> Path:
+    def legacy_pdf_path(self, document_id: str) -> Path:
+        """Where PDFs lived before Papers/ existed."""
         return self.dir_for(document_id) / "original.pdf"
+
+    def papers_path(self, name: str) -> Path:
+        return self._workspace.papers_dir / name
+
+    def resolve_pdf(self, document_id: str) -> tuple[Path | None, str]:
+        """Find a document's PDF and say how it was found.
+
+        ``ok`` the pointer is good; ``relinked`` the file was renamed outside
+        the app and matched back by content hash; ``legacy`` no pointer yet, so
+        the pre-Papers location is used; ``missing`` the bytes are gone. The
+        last is recoverable: metadata, pages, summary and references all
+        survive, and re-supplying matching bytes restores the link.
+        """
+        document = self.get(document_id)
+        pointer = document.pdf.get("path")
+        if pointer:
+            candidate = self._workspace.resolve_inside(pointer)
+            if candidate.is_file():
+                return candidate, "ok"
+            adopted = self._adopt_by_hash(document)
+            if adopted is not None:
+                return adopted, "relinked"
+        legacy = self.legacy_pdf_path(document_id)
+        if legacy.is_file():
+            return legacy, "legacy"
+        adopted = self._adopt_by_hash(document)
+        if adopted is not None:
+            return adopted, "relinked"
+        return None, "missing"
+
+    def pdf_path(self, document_id: str) -> Path:
+        """The PDF's location, or a NotFound naming the recoverable state."""
+        path, status = self.resolve_pdf(document_id)
+        if path is None:
+            raise NotFound(
+                f"The stored PDF for {document_id!r} is missing. Its notes, "
+                "references and summary are intact; re-upload the file to "
+                "restore the link.",
+                document_id=document_id,
+                pdf_status=status,
+            )
+        return path
+
+    def _adopt_by_hash(self, document: Document) -> Path | None:
+        """Claim a Papers/ file whose bytes are this document's.
+
+        A file renamed outside the app keeps the user's spelling rather than
+        being renamed back: they chose it deliberately.
+        """
+        claimed = {
+            other.pdf.get("path")
+            for other in self.list()
+            if other.document_id != document.document_id and other.pdf.get("path")
+        }
+        papers = self._workspace.papers_dir
+        if not papers.is_dir():
+            return None
+        for candidate in sorted(papers.iterdir()):
+            if not candidate.is_file() or candidate.suffix.lower() != ".pdf":
+                continue
+            relative = candidate.relative_to(self._workspace.root).as_posix()
+            if relative in claimed:
+                continue
+            if sha256_bytes(candidate.read_bytes()) != document.sha256:
+                continue
+            document.pdf = {
+                "path": relative,
+                "canonical_name": candidate.name,
+                "linked_at": utcnow(),
+            }
+            self.save(document)
+            return candidate
+        return None
+
+    def unclaimed_papers(self) -> list[dict[str, Any]]:
+        """PDFs sitting in Papers/ that no document points at.
+
+        Offered for explicit import, never claimed silently: a stray file may
+        be a sync artefact, not something the user wants in their library.
+        """
+        papers = self._workspace.papers_dir
+        if not papers.is_dir():
+            return []
+        claimed = {d.pdf.get("path") for d in self.list() if d.pdf.get("path")}
+        loose = []
+        for candidate in sorted(papers.iterdir()):
+            if not candidate.is_file() or candidate.suffix.lower() != ".pdf":
+                continue
+            relative = candidate.relative_to(self._workspace.root).as_posix()
+            if relative in claimed:
+                continue
+            loose.append(
+                {
+                    "path": relative,
+                    "filename": candidate.name,
+                    "byte_size": candidate.stat().st_size,
+                }
+            )
+        return loose
+
+    def taken_names(self) -> set[str]:
+        """Every canonical name already in use, on disk and in metadata.
+
+        Both, because the on-disk spelling cannot be trusted for identity on a
+        case- or normalization-insensitive filesystem.
+        """
+        from .naming import comparable
+
+        taken = {
+            comparable(str(d.pdf["canonical_name"]))
+            for d in self.list()
+            if d.pdf.get("canonical_name")
+        }
+        papers = self._workspace.papers_dir
+        if papers.is_dir():
+            taken |= {comparable(p.name) for p in papers.iterdir() if p.is_file()}
+        return taken
+
+    def place_pdf(self, document: Document, data: bytes) -> Document:
+        """Write the canonical PDF and point the document at it."""
+        from .naming import unique_name
+
+        self._workspace.papers_dir.mkdir(parents=True, exist_ok=True)
+        name = unique_name(document.canonical_name, self.taken_names())
+        target = self._workspace.resolve_inside(self.papers_path(name))
+        atomic_write_bytes(target, data)
+        document.pdf = {
+            "path": target.relative_to(self._workspace.root).as_posix(),
+            "canonical_name": name,
+            "linked_at": utcnow(),
+        }
+        return self.save(document)
 
     def metadata_path(self, document_id: str) -> Path:
         return self.dir_for(document_id) / "metadata.json"
@@ -251,7 +391,34 @@ class DocumentStore:
                     document.year_source = None
                 elif name in {"title", "authors"}:
                     setattr(document, name, None)
-            return self.save(document)
+            saved = self.save(document)
+            return self.rename_to_canonical(saved)
+
+    def rename_to_canonical(self, document: Document) -> Document:
+        """Move the PDF to match corrected metadata, keeping the old name."""
+        from .naming import comparable, unique_name
+
+        current = document.pdf.get("path")
+        if not current:
+            return document
+        source = self._workspace.resolve_inside(current)
+        if not source.is_file():
+            return document
+        wanted = document.canonical_name
+        if comparable(wanted) == comparable(source.name):
+            return document
+        taken = self.taken_names() - {comparable(source.name)}
+        name = unique_name(wanted, taken)
+        target = self._workspace.resolve_inside(self.papers_path(name))
+        # The previous name is recoverable from the history directory.
+        self._workspace.snapshot(source, reason="rename")
+        source.rename(target)
+        document.pdf = {
+            "path": target.relative_to(self._workspace.root).as_posix(),
+            "canonical_name": name,
+            "linked_at": utcnow(),
+        }
+        return self.save(document)
 
     def next_id(self) -> str:
         with self._lock:
@@ -290,10 +457,12 @@ class DocumentStore:
             document_id = self.next_id()
             directory = self._workspace.resolve_inside(self.dir_for(document_id))
             directory.mkdir(parents=True, exist_ok=True)
-            # The original bytes are stored unchanged and never rewritten.
-            atomic_write_bytes(directory / "original.pdf", data)
+            # Staged beside the metadata so pdf_metadata can read it, then
+            # moved to its canonical name once the title and authors are known.
+            staging = directory / "original.pdf"
+            atomic_write_bytes(staging, data)
 
-            info = pdf_metadata(directory / "original.pdf")
+            info = pdf_metadata(staging)
             document = Document(
                 document_id=document_id,
                 sha256=digest,
@@ -316,7 +485,11 @@ class DocumentStore:
                 },
                 summary={"status": NONE, "error": None, "generated_at": None},
             )
-            return self.save(document), False
+            saved = self.save(document)
+            # The original bytes are stored unchanged, under a readable name.
+            saved = self.place_pdf(saved, data)
+            staging.unlink(missing_ok=True)
+            return saved, False
 
     def delete(self, document_id: str) -> None:
         import shutil
@@ -325,7 +498,12 @@ class DocumentStore:
         if not directory.is_dir():
             raise NotFound(f"No document {document_id!r}.", document_id=document_id)
         trash = self._workspace.history_dir / f"deleted-{utcnow().replace(':', '')}-{document_id}"
+        canonical, _ = self.resolve_pdf(document_id)
         shutil.move(str(directory), str(trash))
+        # Without this the PDF stays in Papers/ with nothing pointing at it,
+        # so deleting a document would both lose it and leave it behind.
+        if canonical is not None and canonical.is_file() and canonical.parent != trash:
+            shutil.move(str(canonical), str(trash / canonical.name))
         self._extraction_cache.pop(document_id, None)
 
     # ------------------------------------------------------------ extraction

@@ -247,7 +247,8 @@ def _entry_for(
         unknown.append("year")
 
     # A project-relative path, so the file stays valid when the project moves.
-    fields.append(("file", escape_bibtex(f"documents/{document.document_id}/original.pdf")))
+    stored = document.pdf.get("path") or f"documents/{document.document_id}/original.pdf"
+    fields.append(("file", escape_bibtex(str(stored))))
 
     return BibEntry(
         key=key,
