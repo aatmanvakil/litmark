@@ -561,6 +561,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_notes",
+        "description": (
+            "List notes with IDs, titles, and revision hashes. Use this to find a "
+            "note the user named rather than identified by ID."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "read_note",
         "description": "Read a note's Markdown text and its current revision hash.",
         "input_schema": {
@@ -663,6 +671,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+# Public methods that are deliberately not tools. `dispatch` resolves by
+# getattr, so a method absent from both this set and TOOL_SCHEMAS is callable
+# but invisible to the model — the state list_notes was in. A test enforces
+# that every public method appears in exactly one of the two.
+INTERNAL_METHODS = frozenset({"drain_changes"})
 
 
 def dispatch(tools: ProjectTools, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
