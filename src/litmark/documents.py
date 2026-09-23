@@ -403,7 +403,9 @@ class DocumentStore:
 
         hits: list[SearchHit] = []
         for document in self.list():
-            if document_ids and document.document_id not in document_ids:
+            # `is not None`, not a truth test: an empty list means "no documents
+            # are in scope", which must return nothing rather than everything.
+            if document_ids is not None and document.document_id not in document_ids:
                 continue
             if not document.searchable:
                 continue
