@@ -78,9 +78,9 @@ def year_segment(year: int | None, year_source: str | None) -> str:
 
 
 def sanitize(value: str) -> str:
+    """Make one segment safe. Trailing dots are kept: "et al." needs its."""
     cleaned = _SEPARATORS.sub("-", _UNSAFE.sub("", value))
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned.strip(". ")
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _truncate_to_bytes(value: str, budget: int) -> str:
@@ -105,7 +105,8 @@ def canonical_name(
 ) -> str:
     """The filename for one paper, before any collision suffix."""
     prefix = f"{sanitize(author_segment(authors))} ({year_segment(year, year_source)}) {EN_DASH} "
-    clean_title = sanitize(title) or "Untitled"
+    # Only the title ends the stem, so only the title drops a trailing dot.
+    clean_title = sanitize(title).strip(". ") or "Untitled"
     budget = MAX_BASENAME_BYTES - len(prefix.encode("utf-8")) - len(SUFFIX.encode("utf-8"))
     if budget < 8:
         # A pathological author list; keep the title readable instead.

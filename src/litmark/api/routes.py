@@ -22,7 +22,7 @@ from ..agent.base import RunContext
 from ..agent.tools import dispatch
 from ..documents import QUEUED
 from ..errors import InvalidInput, NotFound, RevisionConflict
-from ..events import COLLECTION_UPDATED, format_sse
+from ..events import COLLECTION_UPDATED, DOCUMENT_UPDATED, format_sse
 from ..references import (
     PAGE_ONLY,
     RESOLVED,
@@ -144,6 +144,15 @@ class UndoRequest(BaseModel):
 class BibliographyWrite(BaseModel):
     cited_only: bool = False
     collection_id: str | None = None
+
+
+class DocumentMetadata(BaseModel):
+    """Bibliographic corrections. Absent means unchanged; `clear` unsets."""
+
+    title: str | None = None
+    authors: str | None = None
+    year: int | None = None
+    clear: list[Literal["title", "authors", "year"]] = Field(default_factory=list)
 
 
 class CollectionCreate(BaseModel):
@@ -290,6 +299,31 @@ def build_router() -> APIRouter:
         services = services_of(request)
         document = services.documents.get(document_id)
         return document.api_json(summary_text=services.documents.summary_text(document_id))
+
+    @router.patch("/documents/{document_id}")
+    async def update_document(
+        request: Request, document_id: str, body: DocumentMetadata
+    ) -> dict[str, Any]:
+        """Correct title, authors or publication year.
+
+        Without this the canonical name is stuck at whatever the PDF claimed,
+        and a year the file never stated could never be supplied.
+        """
+        services = services_of(request)
+        document = services.documents.update_metadata(
+            document_id,
+            title=body.title,
+            authors=body.authors,
+            year=body.year,
+            clear=tuple(body.clear),
+        )
+        payload = document.api_json(
+            summary_text=services.documents.summary_text(document_id)
+        )
+        services.bus.publish(
+            DOCUMENT_UPDATED, {"document_id": document_id, "document": payload}
+        )
+        return payload
 
     @router.get("/documents/{document_id}/pdf")
     async def get_pdf(request: Request, document_id: str) -> Response:
