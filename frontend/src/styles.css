@@ -1160,3 +1160,12 @@ select {
   font-size: 0.82rem;
   cursor: pointer;
 }
+
+.chip.scope {
+  font-weight: 600;
+  border-color: var(--accent, #4a6fa5);
+}
+
+.chip.toggle.out-of-scope {
+  opacity: 0.45;
+}

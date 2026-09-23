@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from ..collections import CollectionStore
 from ..db import Database
 from ..documents import DocumentStore
 from ..errors import NotFound, RevisionConflict, WorkspaceError
@@ -54,11 +55,13 @@ class ProjectTools:
         documents: DocumentStore,
         references: ReferenceStore,
         db: Database,
+        collections: CollectionStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.documents = documents
         self.references = references
         self.db = db
+        self.collections = collections or CollectionStore(workspace)
         self._changed: list[dict[str, Any]] = []
 
     # --------------------------------------------------------- side effects
@@ -97,6 +100,21 @@ class ProjectTools:
             "notes": [
                 {"note_id": note.note_id, "title": note.title, "revision": note.revision}
                 for note in self.workspace.list_notes()
+            ]
+        }
+
+    def list_collections(self) -> dict[str, Any]:
+        """Projects and topics, with the documents each holds."""
+        return {
+            "collections": [
+                {
+                    "collection_id": collection.collection_id,
+                    "kind": collection.kind,
+                    "name": collection.name,
+                    "document_ids": collection.documents,
+                    "document_count": len(collection.documents),
+                }
+                for collection in self.collections.list()
             ]
         }
 
@@ -525,7 +543,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "search_documents",
         "description": (
             "Keyword search over extracted page text. Returns matching passages with "
-            "document IDs and one-based physical page numbers."
+            "document IDs and one-based physical page numbers. When the conversation "
+            "is scoped to a project or topic, the server restricts results to it; "
+            "document_ids can narrow further but never widen."
         ),
         "input_schema": {
             "type": "object",
@@ -559,6 +579,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["document_id", "pages"],
         },
+    },
+    {
+        "name": "list_collections",
+        "description": (
+            "List the projects and topics in this workspace and the documents each "
+            "holds. When a conversation is scoped to one, use this to name it when "
+            "asking the user whether to widen the scope."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "list_notes",
@@ -678,14 +707,139 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 # that every public method appears in exactly one of the two.
 INTERNAL_METHODS = frozenset({"drain_changes"})
 
+# Which argument of each tool names a document. Enforcing scope here rather
+# than inside the methods keeps one list to audit, and it is the only place
+# that sees every call: ProjectTools is a single per-process instance shared
+# with the HTTP thread, so per-instance scope state would leak between a
+# request and a run.
+#
+# `search_documents` holds a list; the rest hold a single ID. Tools that
+# address no document are named in UNSCOPED_TOOLS. A tool in neither is a
+# test failure, so a new tool cannot be added without classifying it.
+DOCUMENT_ARGUMENTS: dict[str, str] = {
+    "search_documents": "document_ids",
+    "read_pages": "document_id",
+    "read_summary": "document_id",
+    "write_summary": "document_id",
+    "resolve_source": "document_id",
+}
 
-def dispatch(tools: ProjectTools, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+# `list_documents` addresses no single document but enumerates them all, so it
+# is clipped rather than refused. `list_collections` is deliberately never
+# clipped: the model needs it to name the collection it is asking to leave.
+CLIPPED_TOOLS = frozenset({"list_documents"})
+
+# A note is not a document, but a `source:` citation reaches one, so the note
+# writers are checked through their citations rather than exempted.
+CITATION_CHECKED_TOOLS = frozenset({"write_note", "patch_note"})
+
+UNSCOPED_TOOLS = frozenset({"list_notes", "list_collections", "read_note"})
+
+
+@dataclass(frozen=True)
+class RunScope:
+    """The documents a run may touch, resolved from a collection at submit."""
+
+    collection_id: str
+    name: str
+    document_ids: frozenset[str]
+
+    def allows(self, document_id: str) -> bool:
+        return document_id in self.document_ids
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "collection_id": self.collection_id,
+            "name": self.name,
+            "document_count": len(self.document_ids),
+        }
+
+
+def _out_of_scope(scope: RunScope, requested: list[str]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "out_of_scope",
+        "message": (
+            f"{', '.join(requested)} is not in {scope.name!r}. This conversation "
+            "is scoped to that collection; ask the user to widen the scope if "
+            "they want it included."
+        ),
+        "scope": scope.describe(),
+    }
+
+
+def _cited_out_of_scope(tools: ProjectTools, text: str, scope: RunScope) -> list[str]:
+    """Reference IDs in ``text`` that point at documents outside the scope."""
+    offenders: list[str] = []
+    for reference_id in sorted(source_ids_in_markdown(text)):
+        try:
+            reference = tools.references.get(reference_id)
+        except WorkspaceError:
+            continue  # Unregistered IDs are refused separately, with a better message.
+        if not scope.allows(reference.document_id):
+            offenders.append(reference_id)
+    return offenders
+
+
+def _apply_scope(
+    tools: ProjectTools, name: str, arguments: dict[str, Any], scope: RunScope
+) -> dict[str, Any] | None:
+    """Narrow the arguments in place, or return a refusal."""
+    if name in CITATION_CHECKED_TOOLS:
+        text = str(arguments.get("new_text") or arguments.get("text") or "")
+        offenders = _cited_out_of_scope(tools, text, scope)
+        if offenders:
+            return {
+                "ok": False,
+                "error": "out_of_scope",
+                "message": (
+                    f"{', '.join(offenders)} cite documents outside {scope.name!r}. "
+                    "Ask the user to widen the scope before citing them."
+                ),
+                "scope": scope.describe(),
+            }
+        return None
+    argument = DOCUMENT_ARGUMENTS.get(name)
+    if argument is None:
+        return None
+    if argument == "document_ids":
+        requested = list(arguments.get("document_ids") or [])
+        if not requested:
+            # An unfiltered search inside a scope searches the scope.
+            arguments["document_ids"] = sorted(scope.document_ids)
+            return None
+        allowed = [d for d in requested if scope.allows(d)]
+        if not allowed:
+            return _out_of_scope(scope, requested)
+        arguments["document_ids"] = allowed
+        return None
+    requested_id = arguments.get(argument)
+    if requested_id is not None and not scope.allows(str(requested_id)):
+        return _out_of_scope(scope, [str(requested_id)])
+    return None
+
+
+def dispatch(
+    tools: ProjectTools,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    scope: RunScope | None = None,
+) -> dict[str, Any]:
     """Call a tool by name, converting domain errors into tool-level results."""
     handler = getattr(tools, name, None)
     if handler is None or name.startswith("_"):
         return {"ok": False, "error": "unknown_tool", "message": f"No tool named {name!r}."}
+    arguments = dict(arguments)
+    if scope is not None:
+        refusal = _apply_scope(tools, name, arguments, scope)
+        if refusal is not None:
+            return refusal
     try:
-        return handler(**arguments)
+        result = handler(**arguments)
+        if scope is not None and isinstance(result, dict):
+            result = _annotate(name, result, scope)
+        return result
     except WorkspaceError as exc:
         return {"ok": False, "error": exc.code, "message": exc.message, **exc.details}
     except TypeError as exc:
@@ -693,6 +847,22 @@ def dispatch(tools: ProjectTools, name: str, arguments: dict[str, Any]) -> dict[
     except Exception as exc:  # noqa: BLE001 - reported to the agent, not swallowed
         log.exception("Tool %s failed", name)
         return {"ok": False, "error": "tool_failed", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def _annotate(name: str, result: dict[str, Any], scope: RunScope) -> dict[str, Any]:
+    """Clip an enumeration to scope and tell the model what it is seeing."""
+    if name in CLIPPED_TOOLS:
+        documents = result.get("documents")
+        if isinstance(documents, list):
+            kept = [d for d in documents if scope.allows(str(d.get("document_id")))]
+            result = {
+                **result,
+                "documents": kept,
+                "excluded": len(documents) - len(kept),
+            }
+    if name not in UNSCOPED_TOOLS:
+        result = {**result, "scope": scope.describe()}
+    return result
 
 
 def as_text(payload: dict[str, Any]) -> str:

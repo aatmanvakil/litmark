@@ -623,7 +623,10 @@ def build_router() -> APIRouter:
     @router.post("/references/resolve")
     async def resolve_reference(request: Request, body: ResolveRequest) -> dict[str, Any]:
         services = services_of(request)
-        return dispatch(services.tools, "resolve_source", body.model_dump())
+        # Deliberately unscoped: this is the human selecting a passage in the
+        # viewer, not the agent reaching for a document. Scoping it would break
+        # manual selection whenever a collection happened to be active.
+        return dispatch(services.tools, "resolve_source", body.model_dump(), scope=None)
 
     # --------------------------------------------------------- bibliography
 
@@ -697,10 +700,18 @@ def build_router() -> APIRouter:
     ) -> dict[str, Any]:
         services = services_of(request)
         services.runner.conversation(conversation_id)  # Confirms it exists.
+        context = RunContext.from_json(body.context)
+        if context.collection_id:
+            # Resolved here, from the registry, rather than trusted from the
+            # client: a caller must not be able to widen its own scope. An
+            # unknown collection is a 404 before the run starts.
+            collection = services.collections.get(context.collection_id)
+            context.collection_name = collection.name
+            context.scope_document_ids = list(collection.documents)
         return services.runner.submit(
             conversation_id=conversation_id,
             prompt=body.prompt,
-            context=RunContext.from_json(body.context),
+            context=context,
         )
 
     @router.post("/runs/{run_id}/cancel")

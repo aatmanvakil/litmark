@@ -24,7 +24,7 @@ import { Chat } from './chat/Chat'
 import { MarkdownEditor } from './editor/MarkdownEditor'
 import { EventStream, type ServerEvent } from './events'
 import { PdfViewer, type PdfMark, type PdfSelection } from './pdf/PdfViewer'
-import { Sidebar } from './Sidebar'
+import { Sidebar, UNFILED } from './Sidebar'
 
 type MainTarget =
   | { kind: 'note'; noteId: string }
@@ -47,6 +47,11 @@ export function App() {
   // Scope is a browser-session choice, not server state: it narrows what the
   // next message can reach, it does not select a saved conversation.
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null)
+  // Unfiled is computed client-side, so it is not a scope the server knows.
+  const scopedCollection =
+    activeCollectionId && activeCollectionId !== UNFILED
+      ? (state?.collections ?? []).find((c) => c.collection_id === activeCollectionId) ?? null
+      : null
 
   const [target, setTarget] = useState<MainTarget>({ kind: 'empty' })
   const [buffer, setBuffer] = useState<Buffer | null>(null)
@@ -652,8 +657,12 @@ export function App() {
               conversation={conversation}
               agent={state.agent}
               documents={state.documents}
-              context={context}
+              context={{ ...context, collection_id: scopedCollection?.collection_id ?? null }}
               events={events}
+              scopeName={scopedCollection?.name ?? null}
+              scopeCount={scopedCollection?.document_count ?? 0}
+              scopeDocumentIds={scopedCollection?.documents ?? null}
+              onClearScope={() => setActiveCollectionId(null)}
               onContextChange={setContext}
               onOpenSource={(id) => void openSource(id)}
               onReload={() => {

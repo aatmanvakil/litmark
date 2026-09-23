@@ -117,7 +117,7 @@ class FakeBackend(AgentBackend):
                 if name in {"write_note", "patch_note", "write_summary"}:
                     arguments.setdefault("run_id", request.run_id)
                 yield AgentEvent(TOOL_STARTED, {"tool": name, "input": arguments})
-                result = dispatch(self._tools, name, arguments)
+                result = dispatch(self._tools, name, arguments, scope=request.scope())
                 if name == "resolve_source" and result.get("reference_id"):
                     last_reference = str(result["reference_id"])
                 yield AgentEvent(TOOL_FINISHED, {"tool": name, "result": result})

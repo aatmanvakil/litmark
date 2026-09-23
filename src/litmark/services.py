@@ -46,7 +46,9 @@ class Services:
         )
         self.references = ReferenceStore(workspace)
         self.collections = CollectionStore(workspace)
-        self.tools = ProjectTools(workspace, self.documents, self.references, self.db)
+        self.tools = ProjectTools(
+            workspace, self.documents, self.references, self.db, self.collections
+        )
         self.auto_summary = bool(agent_settings.get("auto_summary", True))
 
         self.backend_name = backend_name or str(agent_settings.get("backend", "claude"))

@@ -240,12 +240,14 @@ class ClaudeAgentBackend(AgentBackend):
 
         handlers = []
         for schema in TOOL_SCHEMAS:
-            handlers.append(self._make_tool(tool, schema, request.run_id))
+            handlers.append(self._make_tool(tool, schema, request.run_id, request.scope()))
         return create_sdk_mcp_server(
             name=MCP_SERVER_NAME, version="0.1.0", tools=handlers
         )
 
-    def _make_tool(self, tool_decorator: Any, schema: dict[str, Any], run_id: str) -> Any:
+    def _make_tool(
+        self, tool_decorator: Any, schema: dict[str, Any], run_id: str, scope: Any = None
+    ) -> Any:
         name = schema["name"]
         project_tools = self._tools
 
@@ -256,7 +258,7 @@ class ClaudeAgentBackend(AgentBackend):
                 arguments.setdefault("run_id", run_id)
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
-                None, lambda: dispatch(project_tools, name, arguments)
+                None, lambda: dispatch(project_tools, name, arguments, scope=scope)
             )
             return {"content": [{"type": "text", "text": as_text(result)}]}
 
