@@ -24,6 +24,7 @@ from .extraction import (
     normalize_text,
     pdf_metadata,
 )
+from .naming import YEAR_FROM_CREATIONDATE
 from .workspace import Workspace, atomic_write_bytes, atomic_write_text, revision_of, sha256_bytes, utcnow
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ class Document:
     title: str | None = None
     authors: str | None = None
     year: int | None = None
+    # Where `year` came from. A year read from /CreationDate is when the file
+    # was produced, not when the work was published, so it is withheld from
+    # the canonical filename until someone confirms it.
+    year_source: str | None = None
     page_count: int | None = None
     extraction: dict[str, Any] = field(default_factory=dict)
     summary: dict[str, Any] = field(default_factory=dict)
@@ -61,6 +66,18 @@ class Document:
     @property
     def display_title(self) -> str:
         return self.title or Path(self.original_filename).stem or self.document_id
+
+    @property
+    def canonical_name(self) -> str:
+        """The filename this paper's PDF should carry."""
+        from .naming import canonical_name
+
+        return canonical_name(
+            authors=self.authors,
+            year=self.year,
+            title=self.display_title,
+            year_source=self.year_source,
+        )
 
     @property
     def readable(self) -> bool:
@@ -82,6 +99,7 @@ class Document:
             "title": self.title,
             "authors": self.authors,
             "year": self.year,
+            "year_source": self.year_source,
             "page_count": self.page_count,
             "extraction": self.extraction,
             "summary": self.summary,
@@ -92,6 +110,7 @@ class Document:
         payload.pop("schema_version", None)
         payload["display_title"] = self.display_title
         payload["searchable"] = self.searchable
+        payload["canonical_name"] = self.canonical_name
         if summary_text is not None:
             payload["summary_text"] = summary_text
             payload["summary_revision"] = revision_of(summary_text)
@@ -108,6 +127,7 @@ class Document:
             title=data.get("title"),
             authors=data.get("authors"),
             year=data.get("year"),
+            year_source=data.get("year_source"),
             page_count=data.get("page_count"),
             extraction=data.get("extraction") or {},
             summary=data.get("summary") or {},
@@ -248,6 +268,8 @@ class DocumentStore:
                 title=info.get("title"),
                 authors=info.get("authors"),
                 year=info.get("year"),
+                # From /CreationDate, so not a publication year.
+                year_source=YEAR_FROM_CREATIONDATE if info.get("year") else None,
                 page_count=info.get("page_count"),
                 extraction={
                     "status": PENDING,
