@@ -12,6 +12,7 @@ import socket
 from pathlib import Path
 
 import pytest
+from conftest import upload
 
 from litmark.acquisition import (
     ACCEPTED_MANUSCRIPT,
@@ -364,3 +365,71 @@ def test_with_no_provider_configured_the_route_says_so(client):
 
     assert payload["candidates"] == []
     assert "import a PDF you already have" in " ".join(payload["warnings"])
+
+
+# ------------------------------------------------------- confirm to import
+
+
+def _configure(services, works, versions):
+    services._metadata_sources = [Recorded("crossref", works_payload=works)]
+    services._version_sources = [Recorded("unpaywall", versions_payload=versions)]
+
+
+def test_an_unoffered_url_is_refused(client, services):
+    """A caller cannot hand the fetcher an address by claiming a source."""
+    _configure(
+        services,
+        crossref_works(fixture("crossref_work.json")),
+        unpaywall_versions(fixture("unpaywall_open.json")),
+    )
+
+    response = client.post(
+        "/api/acquisition/download",
+        json={"query": "exchange rate", "url": "https://evil.example/payload.pdf"},
+    )
+
+    assert response.status_code == 422
+    assert "was not offered" in response.text
+    assert client.get("/api/documents").json()["documents"] == []
+
+
+def test_a_paywalled_version_cannot_be_downloaded(client, services):
+    _configure(
+        services,
+        crossref_works(fixture("crossref_work.json")),
+        unpaywall_versions(fixture("unpaywall_paywalled.json")),
+    )
+
+    response = client.post(
+        "/api/acquisition/download",
+        json={"query": "closed", "url": "https://doi.org/10.5555/closed.2019"},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/documents").json()["documents"] == []
+
+
+def test_a_known_doi_short_circuits_before_any_download(client, services, paper_one):
+    """No fetch is attempted when the DOI is already in the library."""
+    document_id = upload(client, "have-it.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+    client.patch(f"/api/documents/{document_id}", json={"year": 2021})
+    services.documents.update_metadata(document_id, doi="10.1234/exchange.2021")
+    _configure(
+        services,
+        crossref_works(fixture("crossref_work.json")),
+        unpaywall_versions(fixture("unpaywall_open.json")),
+    )
+
+    payload = client.post(
+        "/api/acquisition/download",
+        json={
+            "query": "exchange rate",
+            "url": "https://journals.example.org/jpe/exchange.pdf",
+        },
+    ).json()
+
+    assert payload["duplicate"] is True
+    assert payload["matched_on"] == "doi"
+    assert payload["document"]["document_id"] == document_id

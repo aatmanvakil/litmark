@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +18,12 @@ from .agent.fake import FakeBackend
 from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
 from .bibliography import Bibliography, build_bibliography
-from .acquisition import Resolution, resolve
+from .acquisition import Resolution, is_fetchable, resolve
+from .acquisition.fetch import fetch_pdf
 from .collections import CollectionStore
 from .db import Database
 from .documents import DocumentStore
+from .errors import InvalidInput
 from .events import DOCUMENT_UPDATED, EventBus
 from .jobs import JobQueue
 from .references import ReferenceStore, citations_by_reference
@@ -185,6 +188,68 @@ class Services:
                 ],
             )
         return resolve(query, metadata_sources=metadata, version_sources=versions)
+
+    def acquire_paper(self, query: str, url: str) -> dict[str, Any]:
+        """Download a confirmed version and import it.
+
+        The URL is not taken on trust from the request. The resolution is
+        re-run and the URL must appear in *this server's* own candidates and
+        pass the fetchable rules — otherwise a caller could hand the fetcher
+        any address it liked by claiming a permitted source.
+        """
+        resolution = self.resolve_paper(query)
+        chosen = None
+        for candidate in resolution.candidates:
+            for version in candidate.versions:
+                if version.url == url and is_fetchable(version):
+                    chosen = (candidate, version)
+                    break
+            if chosen:
+                break
+        if chosen is None:
+            raise InvalidInput(
+                "That download was not offered for this query. Resolve the "
+                "paper again and choose one of the versions listed.",
+                url=url,
+            )
+
+        candidate, version = chosen
+        doi = candidate.work.doi
+        if doi:
+            for existing in self.documents.list():
+                if existing.doi and existing.doi == doi:
+                    return {
+                        "duplicate": True,
+                        "matched_on": "doi",
+                        "document": existing.api_json(),
+                    }
+
+        fetched = fetch_pdf(
+            url,
+            max_bytes=self.documents.max_upload_bytes,
+            allowed_host=urlparse(url).hostname,
+        )
+        document, duplicate = self.documents.import_pdf(
+            fetched.data, f"{candidate.work.title or 'paper'}.pdf"
+        )
+        if not duplicate:
+            # Confirmed metadata replaces what /Info guessed — this is how a
+            # canonical name stops saying n.d.
+            document = self.documents.update_metadata(
+                document.document_id,
+                title=candidate.work.title,
+                authors=candidate.work.authors_string() or None,
+                year=candidate.work.year,
+                doi=doi,
+            )
+            self.enqueue_extraction(document.document_id)
+        return {
+            "duplicate": duplicate,
+            "matched_on": "sha256" if duplicate else None,
+            "document": document.api_json(),
+            "source_url": fetched.url,
+            "source_host": fetched.host,
+        }
 
     def agent_availability(self) -> Availability:
         return self.backend.availability()

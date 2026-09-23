@@ -29,6 +29,8 @@ dependencies = [
   "python-multipart>=0.0.9",
   "pdfplumber>=0.11,<1.0",
   "pypdf>=4.2,<7.0",
+  # The only outbound HTTP in the application, used solely by acquisition.
+  "httpx>=0.27,<1.0",
 ]
 
 [project.optional-dependencies]
