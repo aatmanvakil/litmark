@@ -682,6 +682,52 @@ def test_a12_partial_extraction_is_reported(client):
     assert summary["extraction_warnings"], "the limitation travels with the summary"
 
 
+def test_a12_a_unicode_filename_still_serves_its_pdf(client, paper_one):
+    """A filename outside latin-1 must not stop the PDF from being served."""
+    # Starlette encodes ordinary header values as latin-1, so an en dash in the
+    # stored filename used to raise inside the handler and surface as a 500.
+    name = "IM2021– Exchange Rate Disconnect in General Equilibrium.pdf"
+    document_id = upload(client, name, paper_one)["imported"][0]["document"]["document_id"]
+
+    response = client.get(f"/api/documents/{document_id}/pdf")
+
+    assert response.status_code == 200, response.text
+    assert response.content[:5] == b"%PDF-"
+    disposition = response.headers["content-disposition"]
+    disposition.encode("latin-1")  # the exact operation that used to raise
+    assert 'filename="IM2021 Exchange Rate Disconnect in General Equilibrium.pdf"' in disposition
+    assert "filename*=UTF-8''IM2021%E2%80%93" in disposition
+
+
+def test_a12_a_latin1_representable_filename_is_not_mojibaked(client, paper_one):
+    # The quieter half of the bug: U+00E9 *does* encode to latin-1, so this
+    # never raised — it emitted raw \xe9 and a UTF-8 client rendered "Caf<?>.pdf".
+    document_id = upload(client, "Café.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+
+    response = client.get(f"/api/documents/{document_id}/pdf")
+
+    assert response.status_code == 200, response.text
+    disposition = response.headers["content-disposition"]
+    assert 'filename="Cafe.pdf"' in disposition
+    assert "filename*=UTF-8''Caf%C3%A9.pdf" in disposition
+    # The bare latin-1 byte is what a UTF-8 client used to choke on.
+    assert "é" not in disposition
+    assert b"\xe9" not in disposition.encode("latin-1")
+
+
+def test_a12_a_filename_with_no_ascii_falls_back(client, paper_one):
+    document_id = upload(client, "中文论文.pdf", paper_one)["imported"][0][
+        "document"
+    ]["document_id"]
+
+    disposition = client.get(f"/api/documents/{document_id}/pdf").headers["content-disposition"]
+
+    assert 'filename="document.pdf"' in disposition
+    assert "filename*=UTF-8''%E4%B8%AD%E6%96%87" in disposition
+
+
 # ------------------------------------------------------------------ A13
 
 

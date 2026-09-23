@@ -7,8 +7,12 @@ no arbitrary-path file API: notes and documents are addressed by ID.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 import uuid
+from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote as percent_encode
 
 from fastapi import APIRouter, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -34,6 +38,26 @@ from ..workspace import revision_of, utcnow
 
 def services_of(request: Request) -> Services:
     return request.app.state.services  # type: ignore[no-any-return]
+
+
+_HEADER_UNSAFE = re.compile(r'[\\"\x00-\x1f\x7f]')
+
+
+def _content_disposition(disposition: str, filename: str, fallback: str) -> str:
+    """An RFC 6266 header: an ASCII fallback for old clients, UTF-8 for the rest.
+
+    Starlette encodes ordinary header values as latin-1, so a filename outside
+    that range raises rather than serving.
+    """
+    stem = unicodedata.normalize("NFKD", Path(filename).stem).encode("ascii", "ignore").decode()
+    stem = re.sub(r"\s+", " ", _HEADER_UNSAFE.sub("_", stem)).strip()
+    # The extension comes from the trusted fallback, never the upload: an
+    # untrusted suffix can smuggle a non-ASCII character or a quote back in.
+    ascii_name = stem + Path(fallback).suffix if re.search(r"[A-Za-z0-9]", stem) else fallback
+    return (
+        f'{disposition}; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{percent_encode(filename, safe='')}"
+    )
 
 
 # ------------------------------------------------------------------ schemas
@@ -233,7 +257,9 @@ def build_router() -> APIRouter:
             content=path.read_bytes(),
             media_type="application/pdf",
             headers={
-                "content-disposition": f'inline; filename="{document.original_filename}"',
+                "content-disposition": _content_disposition(
+                    "inline", document.original_filename, "document.pdf"
+                ),
                 "cache-control": "private, max-age=3600",
                 "etag": f'"{document.sha256}"',
             },
