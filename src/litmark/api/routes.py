@@ -33,7 +33,7 @@ from ..references import (
     rects_for_range,
 )
 from ..services import Services
-from ..workspace import revision_of, utcnow
+from ..workspace import revision_of, sha256_bytes, utcnow
 
 
 def services_of(request: Request) -> Services:
@@ -153,6 +153,10 @@ class DocumentMetadata(BaseModel):
     authors: str | None = None
     year: int | None = None
     clear: list[Literal["title", "authors", "year"]] = Field(default_factory=list)
+
+
+class UnclaimedImport(BaseModel):
+    path: str
 
 
 class CollectionCreate(BaseModel):
@@ -330,14 +334,12 @@ def build_router() -> APIRouter:
         services = services_of(request)
         document = services.documents.get(document_id)
         path = services.workspace.resolve_inside(services.documents.pdf_path(document_id))
-        if not path.is_file():
-            raise NotFound(f"The stored PDF for {document_id!r} is missing.")
         return Response(
             content=path.read_bytes(),
             media_type="application/pdf",
             headers={
                 "content-disposition": _content_disposition(
-                    "inline", document.original_filename, "document.pdf"
+                    "inline", document.canonical_name, "document.pdf"
                 ),
                 "cache-control": "private, max-age=3600",
                 "etag": f'"{document.sha256}"',
@@ -433,6 +435,58 @@ def build_router() -> APIRouter:
             "references_marked_missing": touched,
             "collections_updated": released,
         }
+
+    # -------------------------------------------------------------- papers
+
+    @router.get("/papers/unclaimed")
+    async def unclaimed_papers(request: Request) -> dict[str, Any]:
+        """PDFs in Papers/ that no document points at.
+
+        Listed, never imported automatically: a stray file is as likely to be
+        a sync artefact as something the user wants in their library.
+        """
+        return {"unclaimed": services_of(request).documents.unclaimed_papers()}
+
+    @router.post("/papers/unclaimed/import", status_code=201)
+    async def import_unclaimed(request: Request, body: UnclaimedImport) -> dict[str, Any]:
+        services = services_of(request)
+        source = services.workspace.resolve_inside(body.path)
+        if not source.is_file() or source.parent != services.workspace.papers_dir:
+            raise NotFound(f"No unclaimed paper at {body.path!r}.", path=body.path)
+        data = source.read_bytes()
+        document, duplicate = services.documents.import_pdf(data, source.name)
+        if not duplicate:
+            # import_pdf wrote its own canonical copy, so the loose original
+            # would otherwise remain as a second file with the same bytes.
+            stored, _ = services.documents.resolve_pdf(document.document_id)
+            if stored is not None and stored != source:
+                source.unlink(missing_ok=True)
+            services.enqueue_extraction(document.document_id)
+        return {
+            "document": document.api_json(),
+            "duplicate": duplicate,
+        }
+
+    @router.post("/documents/{document_id}/pdf", status_code=200)
+    async def relink_pdf(
+        request: Request,
+        document_id: str,
+        file: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        """Restore a missing source by re-supplying its bytes."""
+        services = services_of(request)
+        document = services.documents.get(document_id)
+        data = await file.read()
+        digest = sha256_bytes(data)
+        if digest != document.sha256:
+            raise InvalidInput(
+                "Those bytes are a different document. Import them as a new "
+                "paper instead; changing a document's PDF would silently move "
+                "its existing references onto different content.",
+                document_id=document_id,
+            )
+        restored = services.documents.place_pdf(document, data)
+        return restored.api_json()
 
     # ---------------------------------------------------------- collections
 
