@@ -27,6 +27,7 @@ RUN_STARTED = "run_started"
 MESSAGE_ADDED = "message_added"
 DOCUMENT_UPDATED = "document_updated"
 JOB_UPDATED = "job_updated"
+COLLECTION_UPDATED = "collection_updated"
 
 
 class EventBus:

@@ -11,7 +11,7 @@ import re
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote as percent_encode
 
 from fastapi import APIRouter, File, Query, Request, Response, UploadFile
@@ -22,7 +22,7 @@ from ..agent.base import RunContext
 from ..agent.tools import dispatch
 from ..documents import QUEUED
 from ..errors import InvalidInput, NotFound, RevisionConflict
-from ..events import format_sse
+from ..events import COLLECTION_UPDATED, format_sse
 from ..references import (
     PAGE_ONLY,
     RESOLVED,
@@ -57,6 +57,15 @@ def _content_disposition(disposition: str, filename: str, fallback: str) -> str:
     return (
         f'{disposition}; filename="{ascii_name}"; '
         f"filename*=UTF-8''{percent_encode(filename, safe='')}"
+    )
+
+
+def _publish_collection(
+    services: Services, collection_id: str, payload: dict[str, Any] | None
+) -> None:
+    """Announce a membership change. ``None`` means the collection is gone."""
+    services.bus.publish(
+        COLLECTION_UPDATED, {"collection_id": collection_id, "collection": payload}
     )
 
 
@@ -117,6 +126,24 @@ class UndoRequest(BaseModel):
 
 class BibliographyWrite(BaseModel):
     cited_only: bool = False
+
+
+class CollectionCreate(BaseModel):
+    kind: Literal["project", "topic"]
+    name: str = Field(max_length=200)
+    description: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
+
+
+class CollectionUpdate(BaseModel):
+    """``kind`` is deliberately absent: reclassifying is delete plus create."""
+
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = None
+
+
+class CollectionMembers(BaseModel):
+    document_ids: list[str] = Field(default_factory=list)
 
 
 def build_router() -> APIRouter:
@@ -346,7 +373,98 @@ def build_router() -> APIRouter:
         services.documents.delete(document_id)
         # References survive as a recoverable missing-source state.
         touched = services.references.mark_missing(document_id)
-        return {"deleted": document_id, "references_marked_missing": touched}
+        # A membership carries nothing but the pair, so it is pruned rather
+        # than tombstoned.
+        released = services.collections.forget_document(document_id)
+        return {
+            "deleted": document_id,
+            "references_marked_missing": touched,
+            "collections_updated": released,
+        }
+
+    # ---------------------------------------------------------- collections
+
+    def _known_documents(services: Services, document_ids: list[str]) -> list[str]:
+        for document_id in document_ids:
+            services.documents.get(document_id)
+        return document_ids
+
+    @router.get("/collections")
+    async def list_collections(request: Request) -> dict[str, Any]:
+        services = services_of(request)
+        documents = [d.document_id for d in services.documents.list()]
+        return {
+            "collections": [c.api_json() for c in services.collections.list()],
+            "unfiled": services.collections.unfiled(documents),
+        }
+
+    @router.post("/collections", status_code=201)
+    async def create_collection(
+        request: Request, body: CollectionCreate
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        _known_documents(services, body.document_ids)
+        collection = services.collections.create(
+            kind=body.kind,
+            name=body.name,
+            description=body.description,
+            documents=body.document_ids,
+        )
+        _publish_collection(services, collection.collection_id, collection.api_json())
+        return collection.api_json()
+
+    @router.patch("/collections/{collection_id}")
+    async def update_collection(
+        request: Request, collection_id: str, body: CollectionUpdate
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        collection = services.collections.update(
+            collection_id, name=body.name, description=body.description
+        )
+        _publish_collection(services, collection_id, collection.api_json())
+        return collection.api_json()
+
+    @router.delete("/collections/{collection_id}")
+    async def delete_collection(request: Request, collection_id: str) -> dict[str, Any]:
+        services = services_of(request)
+        released = services.collections.delete(collection_id)
+        _publish_collection(services, collection_id, None)
+        # The papers themselves are untouched; only the classification is gone.
+        return {"deleted": collection_id, "documents_released": released}
+
+    @router.put("/collections/{collection_id}/documents")
+    async def set_collection_documents(
+        request: Request, collection_id: str, body: CollectionMembers
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        _known_documents(services, body.document_ids)
+        collection = services.collections.set_documents(collection_id, body.document_ids)
+        _publish_collection(services, collection_id, collection.api_json())
+        return collection.api_json()
+
+    @router.post("/collections/{collection_id}/documents")
+    async def add_collection_documents(
+        request: Request, collection_id: str, body: CollectionMembers
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        _known_documents(services, body.document_ids)
+        collection = services.collections.add_documents(collection_id, body.document_ids)
+        _publish_collection(services, collection_id, collection.api_json())
+        return collection.api_json()
+
+    @router.delete("/collections/{collection_id}/documents/{document_id}")
+    async def remove_collection_document(
+        request: Request, collection_id: str, document_id: str
+    ) -> dict[str, Any]:
+        services = services_of(request)
+        before = services.collections.get(collection_id).documents
+        collection = services.collections.remove_document(collection_id, document_id)
+        _publish_collection(services, collection_id, collection.api_json())
+        return {
+            "collection_id": collection_id,
+            "document_id": document_id,
+            "removed": document_id in before,
+        }
 
     # --------------------------------------------------------------- search
 
