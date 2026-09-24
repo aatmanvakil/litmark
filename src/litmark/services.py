@@ -24,7 +24,7 @@ from .collections import CollectionStore
 from .db import Database
 from .documents import DocumentStore
 from .errors import InvalidInput
-from .events import DOCUMENT_UPDATED, EventBus
+from .events import COLLECTION_UPDATED, DOCUMENT_UPDATED, EventBus
 from .jobs import JobQueue
 from .references import ReferenceStore, citations_by_reference
 from .workspace import Workspace, atomic_write_text
@@ -54,7 +54,12 @@ class Services:
         self._version_sources: list[Any] = []
         self.collections = CollectionStore(workspace)
         self.tools = ProjectTools(
-            workspace, self.documents, self.references, self.db, self.collections
+            workspace,
+            self.documents,
+            self.references,
+            self.db,
+            self.collections,
+            on_collection_changed=self._publish_collection_change,
         )
         self.auto_summary = bool(agent_settings.get("auto_summary", True))
 
@@ -250,6 +255,13 @@ class Services:
             "source_url": fetched.url,
             "source_host": fetched.host,
         }
+
+    def _publish_collection_change(
+        self, collection_id: str, payload: dict[str, Any] | None
+    ) -> None:
+        self.bus.publish(
+            COLLECTION_UPDATED, {"collection_id": collection_id, "collection": payload}
+        )
 
     def agent_availability(self) -> Availability:
         return self.backend.availability()

@@ -15,6 +15,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from ..collections import CollectionStore
@@ -56,12 +57,17 @@ class ProjectTools:
         references: ReferenceStore,
         db: Database,
         collections: CollectionStore | None = None,
+        on_collection_changed: Callable[[str, dict[str, Any] | None], None] | None = None,
     ) -> None:
         self.workspace = workspace
         self.documents = documents
         self.references = references
         self.db = db
         self.collections = collections or CollectionStore(workspace)
+        # Injected rather than reached for: a collection change is not a file
+        # edit, so it must not travel the change/undo path, which would report
+        # it in chat as "Edited note col-001".
+        self._on_collection_changed = on_collection_changed
         self._changed: list[dict[str, Any]] = []
 
     # --------------------------------------------------------- side effects
@@ -111,12 +117,106 @@ class ProjectTools:
                     "collection_id": collection.collection_id,
                     "kind": collection.kind,
                     "name": collection.name,
+                    "parent_id": collection.parent_id,
+                    "path": self.collections.path_of(collection.collection_id),
                     "document_ids": collection.documents,
                     "document_count": len(collection.documents),
                 }
                 for collection in self.collections.list()
             ]
         }
+
+    # --------------------------------------------------- collection writes
+
+    def create_collection(
+        self,
+        kind: str,
+        name: str,
+        parent_id: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a project or a topic, optionally nested."""
+        collection = self.collections.create(
+            kind=kind, name=name, parent_id=parent_id, description=description
+        )
+        payload = collection.api_json()
+        payload["path"] = self.collections.path_of(collection.collection_id)
+        self._collection_changed(collection.collection_id, payload)
+        return {"ok": True, "collection": payload}
+
+    def update_collection(
+        self,
+        collection_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        parent_id: str | None = None,
+        detach: bool = False,
+    ) -> dict[str, Any]:
+        """Rename, re-describe or move. ``detach`` moves it to the top level."""
+        from ..collections import UNSET
+
+        parent: Any = UNSET
+        if detach:
+            parent = None
+        elif parent_id is not None:
+            parent = parent_id
+        collection = self.collections.update(
+            collection_id, name=name, description=description, parent_id=parent
+        )
+        payload = collection.api_json()
+        payload["path"] = self.collections.path_of(collection_id)
+        self._collection_changed(collection_id, payload)
+        return {"ok": True, "collection": payload}
+
+    def delete_collection(self, collection_id: str) -> dict[str, Any]:
+        """Remove an *empty* collection.
+
+        A collection holding papers or subtopics is refused. PDF text is
+        evidence, not instruction, and an instruction hidden in a paper must
+        not be able to dismantle someone's library: emptying a collection
+        first is visible in the sidebar, and the interface can still delete a
+        full one.
+        """
+        collection = self.collections.get(collection_id)
+        children = self.collections.children_of(collection_id)
+        if collection.documents or children:
+            return {
+                "ok": False,
+                "error": "collection_not_empty",
+                "message": (
+                    f"{collection.name!r} still holds "
+                    f"{len(collection.documents)} paper(s) and "
+                    f"{len(children)} subcollection(s). Remove those first, or "
+                    "ask the user to delete it from the sidebar."
+                ),
+            }
+        result = self.collections.delete(collection_id)
+        self._collection_changed(collection_id, None)
+        return {"ok": True, "deleted": collection_id, **result}
+
+    def assign_document(self, collection_id: str, document_id: str) -> dict[str, Any]:
+        """Put a paper in a collection."""
+        self.documents.get(document_id)
+        collection = self.collections.add_documents(collection_id, [document_id])
+        payload = collection.api_json()
+        payload["path"] = self.collections.path_of(collection_id)
+        self._collection_changed(collection_id, payload)
+        return {"ok": True, "collection": payload}
+
+    def unassign_document(self, collection_id: str, document_id: str) -> dict[str, Any]:
+        """Take a paper out of a collection. The paper itself is untouched."""
+        collection = self.collections.remove_document(collection_id, document_id)
+        payload = collection.api_json()
+        payload["path"] = self.collections.path_of(collection_id)
+        self._collection_changed(collection_id, payload)
+        return {"ok": True, "collection": payload}
+
+    def _collection_changed(
+        self, collection_id: str, payload: dict[str, Any] | None
+    ) -> None:
+        """Announce a sidebar refresh, separately from the file-edit stream."""
+        if self._on_collection_changed is not None:
+            self._on_collection_changed(collection_id, payload)
 
     def search_documents(
         self, query: str, document_ids: list[str] | None = None, limit: int = 20
@@ -590,6 +690,83 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "create_collection",
+        "description": (
+            "Create a project or a topic. A project is always top level; a "
+            "topic may be nested under a project or another topic by passing "
+            "parent_id. Use list_collections to find the parent's ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["project", "topic"]},
+                "name": {"type": "string"},
+                "parent_id": {"type": "string"},
+                "description": {"type": "string"},
+            },
+            "required": ["kind", "name"],
+        },
+    },
+    {
+        "name": "update_collection",
+        "description": (
+            "Rename a collection, change its description, or move it under a "
+            "different parent. Pass detach=true to move it to the top level. "
+            "A collection's kind cannot be changed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "parent_id": {"type": "string"},
+                "detach": {"type": "boolean"},
+            },
+            "required": ["collection_id"],
+        },
+    },
+    {
+        "name": "delete_collection",
+        "description": (
+            "Remove an empty collection. A collection that still holds papers "
+            "or subtopics is refused; say so and let the user remove it from "
+            "the sidebar instead. Deleting a collection never deletes a paper."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"collection_id": {"type": "string"}},
+            "required": ["collection_id"],
+        },
+    },
+    {
+        "name": "assign_document",
+        "description": "Put a paper into a project or topic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string"},
+                "document_id": {"type": "string"},
+            },
+            "required": ["collection_id", "document_id"],
+        },
+    },
+    {
+        "name": "unassign_document",
+        "description": (
+            "Take a paper out of a project or topic. The paper, its summary "
+            "and its references are untouched."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection_id": {"type": "string"},
+                "document_id": {"type": "string"},
+            },
+            "required": ["collection_id", "document_id"],
+        },
+    },
+    {
         "name": "list_notes",
         "description": (
             "List notes with IDs, titles, and revision hashes. Use this to find a "
@@ -722,6 +899,11 @@ DOCUMENT_ARGUMENTS: dict[str, str] = {
     "read_summary": "document_id",
     "write_summary": "document_id",
     "resolve_source": "document_id",
+    # Filing a paper reaches that paper, so it obeys the scope. Managing the
+    # collections themselves does not: scope governs document contents, not
+    # how the library is organised.
+    "assign_document": "document_id",
+    "unassign_document": "document_id",
 }
 
 # `list_documents` addresses no single document but enumerates them all, so it
@@ -733,7 +915,16 @@ CLIPPED_TOOLS = frozenset({"list_documents"})
 # writers are checked through their citations rather than exempted.
 CITATION_CHECKED_TOOLS = frozenset({"write_note", "patch_note"})
 
-UNSCOPED_TOOLS = frozenset({"list_notes", "list_collections", "read_note"})
+UNSCOPED_TOOLS = frozenset(
+    {
+        "list_notes",
+        "list_collections",
+        "read_note",
+        "create_collection",
+        "update_collection",
+        "delete_collection",
+    }
+)
 
 
 @dataclass(frozen=True)
