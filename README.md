@@ -95,11 +95,24 @@ and the interface says so plainly.
 | `documents/<id>/summary.md` | Editable, cited summary. |
 | `notes/*.md` | User and agent notes. |
 | `references.json` | Versioned source registry. |
-| `collections.json` | Projects and topics, and which papers belong to each. |
+| `collections.json` | Projects and topics, their nesting, and which papers belong to each. |
 | `references.bib` | Generated BibTeX bibliography of the imported documents. |
 | `.research/state.sqlite` | Conversations, events, jobs, run state, change log. |
 | `.research/history/` | Previous file contents, for review and undo. |
 | `.research/runs/` | Staged agent edits and run diagnostics. |
+
+## Chat
+
+Most of what the buttons do can be asked for instead: create a project or a
+topic, nest one inside another, file papers, review a collection, or look a
+paper up by title, citation or DOI. Every control stays where it was — chat
+is an additional way in, not a replacement.
+
+Downloading is the exception. The agent can *offer* a paper: one card per
+paper, listing every version it found, each with a button naming the host it
+would contact and the filename it would be saved as. Nothing is fetched until
+you click one. There is no agent tool that downloads a PDF, and a test
+enumerates the whole tool surface to keep it that way.
 
 ## Citations
 

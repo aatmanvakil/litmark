@@ -239,6 +239,35 @@ with the hostname kept for TLS — checking a name and then letting the client
 resolve it again leaves a window in which the answer can change. Private,
 loopback and link-local addresses are refused at every hop.
 
+### Offering, and confirming
+
+The agent can look a paper up and offer it, but **no agent tool downloads
+one, and none exists that could**. An offer writes a row and shows a card;
+the PDF is fetched only by the confirmation endpoint, which a person clicks.
+A run cannot pause and wait, so the offer is durable and the confirmation is
+a separate request that outlives the run which made it.
+
+**One offer is one work with all of its versions.** A paper available as a
+published article, an accepted manuscript and a preprint is a single decision
+with three options; three separate offers would ask the same question three
+times and allow three files for one paper. The card names the filename once —
+it derives from the work, not the version — and gives each retrievable
+version its own button naming the host it will contact. A version that cannot
+lawfully be fetched is listed with its reason and no button, so the card does
+not appear to have missed the version of record.
+
+The version a confirmation names is looked up in *that offer's own stored
+list*. It is never re-resolved and never taken from the request, so a caller
+cannot pair an offer with a URL it never made.
+
+A confirmation moves through `processing` before reaching `confirmed`, and
+**`confirmed` means the bytes were validated, imported and filed** — not that
+a button was pressed. A failure records its reason and can be retried, which
+costs another human click. Only one request can claim an offer, so two clicks
+produce one file; the content hash is a second, independent guarantee of the
+same thing. A download interrupted by a dying process is swept to failed on
+the next open, so it can be retried rather than staying frozen.
+
 Confirmed metadata seeds the canonical filename and the DOI, replacing what
 the PDF's own `/Info` dictionary guessed — this is how a name stops saying
 `n.d.` Duplicates are caught before download by DOI and after download by
@@ -332,6 +361,36 @@ deletes a paper. Deleting a *paper* prunes its memberships outright rather than
 leaving a tombstone: a reference is preserved on delete because it carries
 irreplaceable quote geometry, whereas a membership carries nothing beyond the
 pair.
+
+Topics nest. A **project is always a root**; a **topic** may sit under a
+project or under another topic. Every forbidden case reduces to that single
+rule, so this is deliberately not stated as a restriction on mixing kinds —
+a topic under a project is the arrangement the feature exists for. Nesting is
+capped at five levels, and because `collections.json` is hand-editable the
+loader drops a parent it cannot honour rather than trusting the file: unknown,
+self-referential, cyclic, or set on a project. Deleting a collection splices
+its children up to the grandparent; orphaning them would lose the structure,
+and refusing would leave someone working from chat unable to remove anything
+with a subtopic.
+
+**A collection's scope includes everything nested under it.** Scoping to a
+parent whose papers all live in its subtopics must not silently find nothing.
+The subtree is resolved once when a message is submitted, so nothing enters
+the dispatch path and the scope stays fixed for the run.
+
+The interface is not the only way to organise. The agent can create, rename,
+move and delete collections, and file papers into them, so a library can be
+arranged by asking. Filing a paper is scope-checked, because it reaches that
+paper; managing the collections themselves is not, because scope governs a
+paper's contents rather than how the library is arranged — which is what lets
+a scoped conversation still create a subtopic elsewhere.
+
+Deleting is the exception the agent does not get. `delete_collection` refuses
+a collection that still holds papers or subtopics. PDF text is evidence and
+reaches the model through `read_pages`, so an instruction hidden inside a
+paper must not be able to dismantle a library; emptying a collection first is
+visible in the sidebar, and the interface can still delete a full one. The
+restriction is on the agent, not the user.
 
 Chat can be scoped to one collection, and the scope is enforced by the server,
 not suggested to the model. Attached context is advisory by design — it is
