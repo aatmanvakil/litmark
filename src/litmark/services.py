@@ -19,6 +19,7 @@ from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
 from .bibliography import Bibliography, build_bibliography
 from .acquisition import Resolution, is_fetchable, resolve
+from .acquisition.config import AcquisitionConfig
 from .acquisition.fetch import fetch_pdf
 from .collections import CollectionStore
 from .proposals import ProposalStore
@@ -47,6 +48,9 @@ class Services:
         settings = workspace.settings()
         ingestion = settings.get("ingestion") or {}
         agent_settings = settings.get("agent") or {}
+        # Flags and contact address from project.toml; the OpenAlex key only
+        # from the environment. See acquisition/config.py for why.
+        self.acquisition = AcquisitionConfig.from_settings(settings)
 
         self.db = Database(workspace.db_path)
         self.bus = EventBus(self.db)
@@ -190,8 +194,8 @@ class Services:
     def metadata_sources(self) -> tuple[list[Any], list[Any]]:
         """Configured providers, as (metadata, version) lists.
 
-        Empty until a transport is configured. Resolution then reports that it
-        cannot reach anything, rather than inventing a result.
+        Empty when nothing is enabled or available. Resolution then reports
+        that it cannot reach anything, rather than inventing a result.
         """
         return list(self._metadata_sources), list(self._version_sources)
 
