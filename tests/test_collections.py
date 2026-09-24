@@ -110,6 +110,7 @@ def test_delete_collection_keeps_documents(client, services, paper_one):
     deleted = client.delete(f"/api/collections/{created['collection_id']}").json()
 
     assert deleted["documents_released"] == 1
+    assert deleted["children_reparented"] == 0
     assert client.get(f"/api/documents/{document_id}").status_code == 200
     assert client.get(f"/api/documents/{document_id}/pdf").status_code == 200
     assert services.documents.summary_path(document_id).parent.is_dir()

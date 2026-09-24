@@ -269,7 +269,7 @@ class Services:
             "agent": self.agent_availability().to_json(),
             "documents": documents,
             "notes": [note.to_json(include_text=False) for note in self.workspace.list_notes()],
-            "collections": [c.api_json() for c in self.collections.list()],
+            "collections": self.collections.api_list(),
             "unfiled": self.collections.unfiled([d["document_id"] for d in documents]),
             "conversations": self.runner.list_conversations(),
             "latest_seq": self.db.latest_seq(),
