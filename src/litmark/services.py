@@ -25,7 +25,13 @@ from .proposals import ProposalStore
 from .db import Database
 from .documents import DocumentStore
 from .errors import InvalidInput, WorkspaceError
-from .events import COLLECTION_UPDATED, DOCUMENT_UPDATED, DOWNLOAD_RESOLVED, EventBus
+from .events import (
+    COLLECTION_UPDATED,
+    DOCUMENT_UPDATED,
+    DOWNLOAD_PROPOSED,
+    DOWNLOAD_RESOLVED,
+    EventBus,
+)
 from .jobs import JobQueue
 from .references import ReferenceStore, citations_by_reference
 from .workspace import Workspace, atomic_write_text
@@ -62,6 +68,8 @@ class Services:
             self.db,
             self.collections,
             on_collection_changed=self._publish_collection_change,
+            find_paper=self.resolve_paper,
+            propose_download=self.propose_download,
         )
         self.auto_summary = bool(agent_settings.get("auto_summary", True))
 
@@ -284,6 +292,85 @@ class Services:
         self.bus.publish(
             COLLECTION_UPDATED, {"collection_id": collection_id, "collection": payload}
         )
+
+    def propose_download(
+        self,
+        *,
+        query: str,
+        assign_collection_id: str | None = None,
+        conversation_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an offer. Resolves metadata; fetches no PDF.
+
+        Every version the work offers is kept, including ones that cannot be
+        downloaded, so the card can show that a paywalled version of record
+        exists rather than appearing to have missed it.
+        """
+        resolution = self.resolve_paper(query)
+        if not resolution.candidates:
+            return {
+                "ok": False,
+                "error": "not_found",
+                "message": "; ".join(resolution.warnings) or "No matching work.",
+            }
+        candidate = resolution.candidates[0]
+        if assign_collection_id:
+            self.collections.get(assign_collection_id)  # 404 before offering.
+
+        versions = []
+        for index, version in enumerate(candidate.versions, start=1):
+            payload = version.to_json()
+            payload["version_id"] = f"v{index}"
+            # Re-checked here, not only at confirm, so a card never shows a
+            # download button for something the fetcher would refuse.
+            payload["retrievable"] = bool(is_fetchable(version))
+            if not payload["retrievable"] and not payload.get("reason"):
+                payload["reason"] = "not a permitted source"
+            versions.append(payload)
+        if not versions:
+            return {
+                "ok": False,
+                "error": "no_versions",
+                "message": "No version of that paper is available to download.",
+            }
+
+        work = candidate.work
+        proposal = self.proposals.create(
+            query=query,
+            work={
+                "title": work.title,
+                "authors": work.authors_string() or None,
+                "year": work.year,
+                "journal": work.journal,
+                "doi": work.doi,
+            },
+            versions=versions,
+            canonical_filename=self.documents.predict_canonical_name(
+                title=work.title,
+                authors=work.authors_string() or None,
+                year=work.year,
+                year_confirmed=work.year is not None,
+            ),
+            conversation_id=conversation_id,
+            run_id=run_id,
+            assign_collection_id=assign_collection_id,
+        )
+        self.bus.publish(
+            DOWNLOAD_PROPOSED,
+            {"proposal_id": proposal.id, "proposal": proposal.api_json()},
+            conversation_id=conversation_id,
+        )
+        return {
+            "ok": True,
+            "proposed": True,
+            "downloaded": False,
+            "proposal": proposal.api_json(),
+            "message": (
+                "Offered to the user. Nothing has been downloaded; they must "
+                "choose a version before anything is fetched."
+            ),
+        }
 
     def confirm_proposal(self, proposal_id: str, version_id: str) -> dict[str, Any]:
         """Download the chosen version, import it, and file it.

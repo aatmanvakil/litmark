@@ -58,6 +58,8 @@ class ProjectTools:
         db: Database,
         collections: CollectionStore | None = None,
         on_collection_changed: Callable[[str, dict[str, Any] | None], None] | None = None,
+        find_paper: Callable[[str], Any] | None = None,
+        propose_download: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = workspace
         self.documents = documents
@@ -68,6 +70,10 @@ class ProjectTools:
         # edit, so it must not travel the change/undo path, which would report
         # it in chat as "Edited note col-001".
         self._on_collection_changed = on_collection_changed
+        # Injected, so the tool surface has no route to the fetcher. Neither
+        # callable downloads: one resolves metadata, the other writes a row.
+        self._find_paper = find_paper
+        self._propose_download = propose_download
         self._changed: list[dict[str, Any]] = []
 
     # --------------------------------------------------------- side effects
@@ -125,6 +131,45 @@ class ProjectTools:
                 for collection in self.collections.list()
             ]
         }
+
+    # ------------------------------------------------------------ finding
+
+    def find_paper(self, query: str) -> dict[str, Any]:
+        """Look up a paper by title, citation or DOI. Downloads nothing."""
+        if self._find_paper is None:
+            return {
+                "ok": False,
+                "error": "acquisition_unavailable",
+                "message": "No metadata provider is configured for this project.",
+            }
+        resolution = self._find_paper(query)
+        payload = resolution.to_json()
+        payload["ok"] = True
+        payload["note"] = (
+            "Nothing has been downloaded or saved. To offer one of these to "
+            "the user, call propose_download; only they can accept it."
+        )
+        return payload
+
+    def propose_download(
+        self,
+        query: str,
+        assign_collection_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Offer a paper for the user to download. Fetches nothing.
+
+        This writes a row and shows the user a card. The PDF is fetched only
+        if they click one of its versions — there is no tool that downloads.
+        """
+        if self._propose_download is None:
+            return {
+                "ok": False,
+                "error": "acquisition_unavailable",
+                "message": "No metadata provider is configured for this project.",
+            }
+        return self._propose_download(
+            query=query, assign_collection_id=assign_collection_id
+        )
 
     # --------------------------------------------------- collection writes
 
@@ -690,6 +735,38 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "find_paper",
+        "description": (
+            "Look up a paper by title, citation or DOI and return candidate "
+            "works with the versions available for each. This downloads and "
+            "saves nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "propose_download",
+        "description": (
+            "Offer a paper to the user as a card they can accept. Every "
+            "available version is shown and they pick one. This does NOT "
+            "download the paper and there is no tool that does — only the "
+            "user's click fetches anything. Pass assign_collection_id to have "
+            "it filed into a collection once they accept. Say plainly that "
+            "you have offered it and are waiting for them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "assign_collection_id": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "create_collection",
         "description": (
             "Create a project or a topic. A project is always top level; a "
@@ -923,6 +1000,10 @@ UNSCOPED_TOOLS = frozenset(
         "create_collection",
         "update_collection",
         "delete_collection",
+        # Neither reads a document in this project: one looks a paper up,
+        # the other writes an offer. Neither fetches anything.
+        "find_paper",
+        "propose_download",
     }
 )
 
