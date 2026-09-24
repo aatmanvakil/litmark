@@ -122,6 +122,11 @@ export interface Collection {
   kind: CollectionKind
   name: string
   description?: string | null
+  /** A project is always a root; a topic may sit under a project or a topic. */
+  parent_id: string | null
+  /** "International Macro / Dominant Currency", for addressing by name. */
+  path?: string
+  descendant_count?: number
   documents: string[]
   document_count: number
   created_at: string
@@ -338,10 +343,21 @@ export const api = {
 
   collections: () =>
     request<{ collections: Collection[]; unfiled: string[] }>('/collections'),
-  createCollection: (kind: CollectionKind, name: string, document_ids: string[] = []) =>
+  createCollection: (
+    kind: CollectionKind,
+    name: string,
+    document_ids: string[] = [],
+    parent_id: string | null = null,
+  ) =>
     request<Collection>('/collections', {
       method: 'POST',
-      body: JSON.stringify({ kind, name, document_ids }),
+      body: JSON.stringify({ kind, name, document_ids, parent_id }),
+    }),
+  /** Omitting parent_id leaves it alone; null detaches to the top level. */
+  moveCollection: (id: string, parent_id: string | null) =>
+    request<Collection>(`/collections/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ parent_id }),
     }),
   renameCollection: (id: string, name: string) =>
     request<Collection>(`/collections/${encodeURIComponent(id)}`, {
