@@ -287,3 +287,115 @@ def test_send_message_with_an_unknown_collection_is_rejected(client):
     )
 
     assert response.status_code == 404
+
+
+# ------------------------------------------------- scope includes descendants
+
+
+@pytest.fixture
+def nested(client, services, paper_one, paper_two, blank_paper):
+    """A project, a subtopic under it, and a sibling subtree outside."""
+    inner = upload(client, "inner.pdf", paper_one)["imported"][0]["document"]["document_id"]
+    outer = upload(client, "outer.pdf", paper_two)["imported"][0]["document"]["document_id"]
+    sibling = upload(client, "sibling.pdf", blank_paper)["imported"][0]["document"][
+        "document_id"
+    ]
+    for document_id in (inner, outer, sibling):
+        wait_for_extraction(client, document_id)
+    root = services.collections.create(kind="project", name="International Macro")
+    child = services.collections.create(
+        kind="topic",
+        name="Dominant Currency",
+        parent_id=root.collection_id,
+        documents=[inner],
+    )
+    services.collections.create(
+        kind="topic", name="Unrelated", documents=[sibling]
+    )
+    return {"root": root, "child": child, "inner": inner, "outer": outer, "sibling": sibling}
+
+
+def _scope_for(services, collection_id):
+    collection = services.collections.get(collection_id)
+    return RunScope(
+        collection_id=collection_id,
+        name=collection.name,
+        document_ids=frozenset(services.collections.scope_document_ids(collection_id)),
+        collection_ids=frozenset(services.collections.descendant_ids(collection_id)),
+    )
+
+
+def test_a_parent_scope_reaches_a_subtopics_papers(services, nested):
+    """The whole point: a parent whose papers live one level down."""
+    scope = _scope_for(services, nested["root"].collection_id)
+
+    result = dispatch(
+        services.tools, "read_pages", {"document_id": nested["inner"], "pages": [1]}, scope=scope
+    )
+
+    assert result.get("error") is None
+    assert result["pages"]
+
+
+def test_a_sibling_subtree_stays_out_of_scope(services, nested):
+    scope = _scope_for(services, nested["root"].collection_id)
+
+    result = dispatch(
+        services.tools, "read_pages", {"document_id": nested["sibling"], "pages": [1]}, scope=scope
+    )
+
+    assert result["error"] == "out_of_scope"
+
+
+def test_scoping_to_the_child_excludes_the_parents_own_papers(services, nested):
+    services.collections.add_documents(
+        nested["root"].collection_id, [nested["outer"]]
+    )
+    scope = _scope_for(services, nested["child"].collection_id)
+
+    allowed = dispatch(
+        services.tools, "read_summary", {"document_id": nested["inner"]}, scope=scope
+    )
+    refused = dispatch(
+        services.tools, "read_summary", {"document_id": nested["outer"]}, scope=scope
+    )
+
+    assert allowed.get("error") is None
+    assert refused["error"] == "out_of_scope"
+
+
+def test_the_scope_block_reports_the_subtree(services, nested):
+    scope = _scope_for(services, nested["root"].collection_id)
+
+    described = dispatch(services.tools, "list_documents", {}, scope=scope)["scope"]
+
+    assert described["includes_descendants"] is True
+    assert described["collection_count"] == 2
+
+
+def test_a_refusal_mentions_what_is_under_the_collection(services, nested):
+    scope = _scope_for(services, nested["root"].collection_id)
+
+    refused = dispatch(
+        services.tools, "read_pages", {"document_id": nested["sibling"], "pages": [1]}, scope=scope
+    )
+
+    assert "under it" in refused["message"]
+
+
+def test_send_message_resolves_the_whole_subtree(client, services, nested):
+    conversation = client.post("/api/conversations", json={"title": "Nested"}).json()
+
+    client.post(
+        f"/api/conversations/{conversation['conversation_id']}/messages",
+        json={
+            "prompt": "Review these.",
+            "context": {"collection_id": nested["root"].collection_id},
+        },
+    )
+
+    stored = client.get(f"/api/conversations/{conversation['conversation_id']}").json()
+    context = stored["messages"][0]["context"]
+    assert nested["inner"] in context["scope_document_ids"]
+    assert nested["sibling"] not in context["scope_document_ids"]
+    assert len(context["scope_collection_ids"]) == 2

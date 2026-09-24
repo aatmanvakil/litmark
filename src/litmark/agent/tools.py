@@ -738,11 +738,16 @@ UNSCOPED_TOOLS = frozenset({"list_notes", "list_collections", "read_note"})
 
 @dataclass(frozen=True)
 class RunScope:
-    """The documents a run may touch, resolved from a collection at submit."""
+    """The documents a run may touch, resolved from a collection at submit.
+
+    A collection's scope includes everything beneath it, so `collection_ids`
+    is the whole subtree and `document_ids` their combined membership.
+    """
 
     collection_id: str
     name: str
     document_ids: frozenset[str]
+    collection_ids: frozenset[str] = frozenset()
 
     def allows(self, document_id: str) -> bool:
         return document_id in self.document_ids
@@ -752,6 +757,8 @@ class RunScope:
             "collection_id": self.collection_id,
             "name": self.name,
             "document_count": len(self.document_ids),
+            "collection_count": len(self.collection_ids) or 1,
+            "includes_descendants": True,
         }
 
 
@@ -760,9 +767,9 @@ def _out_of_scope(scope: RunScope, requested: list[str]) -> dict[str, Any]:
         "ok": False,
         "error": "out_of_scope",
         "message": (
-            f"{', '.join(requested)} is not in {scope.name!r}. This conversation "
-            "is scoped to that collection; ask the user to widen the scope if "
-            "they want it included."
+            f"{', '.join(requested)} is not in {scope.name!r} or anything "
+            "under it. This conversation is scoped to that collection; ask "
+            "the user to widen the scope if they want it included."
         ),
         "scope": scope.describe(),
     }

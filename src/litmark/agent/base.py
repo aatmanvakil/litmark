@@ -55,6 +55,7 @@ class RunContext:
     collection_id: str | None = None
     collection_name: str | None = None
     scope_document_ids: list[str] = field(default_factory=list)
+    scope_collection_ids: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -67,6 +68,7 @@ class RunContext:
             "collection_id": self.collection_id,
             "collection_name": self.collection_name,
             "scope_document_ids": self.scope_document_ids,
+            "scope_collection_ids": self.scope_collection_ids,
         }
 
     @classmethod
@@ -84,6 +86,7 @@ class RunContext:
             # membership itself in `send_message`.
             collection_name=None,
             scope_document_ids=[],
+            scope_collection_ids=[],
         )
 
     def describe(self) -> str:
@@ -96,8 +99,10 @@ class RunContext:
         if self.collection_id:
             lines.append(
                 f"- Scope: {self.collection_name or self.collection_id} "
-                f"({len(self.scope_document_ids)} papers). Tool results are "
-                "restricted to it by the server; only the user can widen it."
+                f"({len(self.scope_document_ids)} papers across "
+                f"{len(self.scope_collection_ids) or 1} collections, including "
+                "everything nested under it). Tool results are restricted to "
+                "it by the server; only the user can widen it."
             )
         if self.reference_id:
             lines.append(f"- Currently open source: {self.reference_id}")
@@ -134,6 +139,7 @@ class RunRequest:
             collection_id=self.context.collection_id,
             name=self.context.collection_name or self.context.collection_id,
             document_ids=frozenset(self.context.scope_document_ids),
+            collection_ids=frozenset(self.context.scope_collection_ids),
         )
 
 
