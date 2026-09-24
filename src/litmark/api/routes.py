@@ -170,6 +170,12 @@ class AcquisitionDownload(BaseModel):
     url: str
 
 
+class ProposalConfirm(BaseModel):
+    """Which of the versions this proposal offered."""
+
+    version_id: str
+
+
 class UnclaimedImport(BaseModel):
     path: str
 
@@ -484,6 +490,34 @@ def build_router() -> APIRouter:
             raise InvalidInput(
                 f"The download was refused: {exc.reason}.", **exc.details
             ) from exc
+
+    @router.get("/proposals")
+    async def list_proposals(request: Request, status: str = "pending") -> dict[str, Any]:
+        services = services_of(request)
+        found = services.proposals.pending() if status == "pending" else []
+        return {"proposals": [p.api_json() for p in found]}
+
+    @router.get("/proposals/{proposal_id}")
+    async def get_proposal(request: Request, proposal_id: str) -> dict[str, Any]:
+        return services_of(request).proposals.get(proposal_id).api_json()
+
+    @router.post("/proposals/{proposal_id}/confirm", status_code=201)
+    async def confirm_proposal(
+        request: Request, proposal_id: str, body: ProposalConfirm
+    ) -> dict[str, Any]:
+        """Download one offered version. The only path that fetches a PDF."""
+        services = services_of(request)
+        try:
+            return services.confirm_proposal(proposal_id, body.version_id)
+        except FetchRefused as exc:
+            services.proposals.fail(proposal_id, exc.reason)
+            raise InvalidInput(
+                f"The download was refused: {exc.reason}.", **exc.details
+            ) from exc
+
+    @router.post("/proposals/{proposal_id}/decline")
+    async def decline_proposal(request: Request, proposal_id: str) -> dict[str, Any]:
+        return services_of(request).decline_proposal(proposal_id)
 
     # -------------------------------------------------------------- papers
 
@@ -829,7 +863,15 @@ def build_router() -> APIRouter:
 
     @router.get("/conversations/{conversation_id}")
     async def get_conversation(request: Request, conversation_id: str) -> dict[str, Any]:
-        return services_of(request).runner.conversation(conversation_id)
+        services = services_of(request)
+        payload = services.runner.conversation(conversation_id)
+        # Carried here so a reload rebuilds any cards: a run cannot pause, so
+        # an offer outlives the run that made it.
+        payload["proposals"] = [
+            proposal.api_json()
+            for proposal in services.proposals.for_conversation(conversation_id)
+        ]
+        return payload
 
     @router.get("/conversations/{conversation_id}/export")
     async def export_conversation(

@@ -21,10 +21,11 @@ from .bibliography import Bibliography, build_bibliography
 from .acquisition import Resolution, is_fetchable, resolve
 from .acquisition.fetch import fetch_pdf
 from .collections import CollectionStore
+from .proposals import ProposalStore
 from .db import Database
 from .documents import DocumentStore
-from .errors import InvalidInput
-from .events import COLLECTION_UPDATED, DOCUMENT_UPDATED, EventBus
+from .errors import InvalidInput, WorkspaceError
+from .events import COLLECTION_UPDATED, DOCUMENT_UPDATED, DOWNLOAD_RESOLVED, EventBus
 from .jobs import JobQueue
 from .references import ReferenceStore, citations_by_reference
 from .workspace import Workspace, atomic_write_text
@@ -53,6 +54,7 @@ class Services:
         self._metadata_sources: list[Any] = []
         self._version_sources: list[Any] = []
         self.collections = CollectionStore(workspace)
+        self.proposals = ProposalStore(self.db)
         self.tools = ProjectTools(
             workspace,
             self.documents,
@@ -90,10 +92,13 @@ class Services:
         self.jobs.bind_loop(loop)
 
     def recover(self) -> dict[str, int]:
-        """Requeue interrupted jobs and mark unfinished runs."""
+        """Requeue interrupted jobs, and mark unfinished runs and downloads."""
         return {
             "jobs": self.jobs.recover(),
             "runs": self.runner.recover(),
+            # A download whose process died is stuck in `processing`; failing
+            # it makes it retryable instead of permanently frozen.
+            "downloads": self.proposals.sweep_interrupted(),
         }
 
     async def shutdown(self) -> None:
@@ -279,6 +284,61 @@ class Services:
         self.bus.publish(
             COLLECTION_UPDATED, {"collection_id": collection_id, "collection": payload}
         )
+
+    def confirm_proposal(self, proposal_id: str, version_id: str) -> dict[str, Any]:
+        """Download the chosen version, import it, and file it.
+
+        Claiming the row is what makes a double click safe; only then is
+        anything fetched, and the proposal reaches `confirmed` only once the
+        bytes are validated, imported and assigned.
+        """
+        proposal = self.proposals.claim(proposal_id, version_id)
+        version = proposal.version(version_id) or {}
+        try:
+            result = self.acquire_paper(
+                proposal.query, str(version.get("url")), expect_doi=proposal.doi
+            )
+        except WorkspaceError as exc:
+            self.proposals.fail(proposal_id, exc.message)
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded, and retryable
+            self.proposals.fail(proposal_id, f"{type(exc).__name__}: {exc}")
+            raise
+
+        document_id = result["document"]["document_id"]
+        assigned = None
+        if proposal.assign_collection_id:
+            try:
+                collection = self.collections.add_documents(
+                    proposal.assign_collection_id, [document_id]
+                )
+                assigned = collection.api_json()
+                self._publish_collection_change(collection.collection_id, assigned)
+            except WorkspaceError as exc:
+                self.proposals.fail(proposal_id, f"Downloaded, but not filed: {exc.message}")
+                raise
+
+        settled = self.proposals.succeed(proposal_id, document_id)
+        self.bus.publish(
+            DOWNLOAD_RESOLVED,
+            {"proposal_id": proposal_id, "proposal": settled.api_json()},
+        )
+        return {
+            **result,
+            "proposal": settled.api_json(),
+            # The name actually written, which may carry a collision suffix
+            # the card could not have predicted.
+            "canonical_filename": result["document"].get("canonical_name"),
+            "assigned_to": assigned,
+        }
+
+    def decline_proposal(self, proposal_id: str) -> dict[str, Any]:
+        declined = self.proposals.decline(proposal_id)
+        self.bus.publish(
+            DOWNLOAD_RESOLVED,
+            {"proposal_id": proposal_id, "proposal": declined.api_json()},
+        )
+        return declined.api_json()
 
     def agent_availability(self) -> Availability:
         return self.backend.availability()
