@@ -223,6 +223,8 @@ def build_router() -> APIRouter:
             "documents": len(services.documents.list()),
             "notes": len(services.workspace.list_notes()),
             "references": len(services.references.all()),
+            # Reports whether a key is present, never its value.
+            "acquisition": services.acquisition.to_json(),
         }
 
     # ---------------------------------------------------------------- notes

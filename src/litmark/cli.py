@@ -273,6 +273,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  {availability.message}")
         if availability.detail:
             print(f"  {availability.detail}")
+
+        acquisition = services.acquisition
+        print("paper lookup:")
+        if not acquisition.any_available:
+            print("  no provider available; you can still import a PDF you have")
+        for status in acquisition.statuses():
+            if status.available:
+                print(f"  {status.name}: ready")
+            else:
+                print(f"  {status.name}: unavailable — {status.reason}")
         # Credentials are never printed, only reported as present or absent.
         return 0 if availability.ready and assets else 1
     finally:
