@@ -105,5 +105,7 @@ const KNOWN_EVENTS = [
   'document_updated',
   'job_updated',
   'collection_updated',
+  'download_proposed',
+  'download_resolved',
   'ping',
 ]

@@ -669,6 +669,7 @@ export function App() {
               onClearScope={() => setActiveCollectionId(null)}
               onContextChange={setContext}
               onOpenSource={(id) => void openSource(id)}
+              onOpenDocument={openDocumentById}
               onReload={() => {
                 void reloadConversation()
                 if (!dirty) void reloadBuffer()

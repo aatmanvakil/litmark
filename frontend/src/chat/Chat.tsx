@@ -6,6 +6,7 @@
  * expandable detail view so the interface stays about the research.
  */
 
+import { Fragment } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import {
@@ -15,10 +16,12 @@ import {
   type Conversation,
   type DocumentRecord,
   type MessageContext,
+  type ProposalRecord,
   type RunRecord,
 } from '../api'
 import type { ServerEvent } from '../events'
 import { renderMarkdown } from '../markdown'
+import { ProposalCard } from './ProposalCard'
 
 export interface ToolActivity {
   id: string
@@ -38,6 +41,7 @@ export interface ChatProps {
   onContextChange: (context: MessageContext) => void
   onOpenSource: (referenceId: string) => void
   onReload: () => void
+  onOpenDocument: (documentId: string) => void
   scopeName: string | null
   scopeCount: number
   scopeDocumentIds: string[] | null
@@ -114,6 +118,10 @@ export function Chat(props: ChatProps) {
               event.target_id,
             )}${event.summary ? ` — ${String(event.summary)}` : ''}`,
           ])
+          reload = true
+          break
+        case 'download_proposed':
+        case 'download_resolved':
           reload = true
           break
         case 'message_added':
@@ -226,7 +234,28 @@ export function Chat(props: ChatProps) {
 
       <div class="chat-log" ref={scroller}>
         {(props.conversation?.messages ?? []).map((message) => (
-          <Bubble key={message.message_id} message={message} onOpenSource={props.onOpenSource} />
+          <Fragment key={message.message_id}>
+            <Bubble message={message} onOpenSource={props.onOpenSource} />
+            {/* A card sits after the message it answers; piling them at the
+                bottom would lose the question they belong to. */}
+            {proposalsAfter(props.conversation, message.message_id).map((proposal) => (
+              <ProposalCard
+                key={proposal.proposal_id}
+                proposal={proposal}
+                onResolved={props.onReload}
+                onOpenDocument={props.onOpenDocument}
+              />
+            ))}
+          </Fragment>
+        ))}
+
+        {proposalsAfter(props.conversation, null).map((proposal) => (
+          <ProposalCard
+            key={proposal.proposal_id}
+            proposal={proposal}
+            onResolved={props.onReload}
+            onOpenDocument={props.onOpenDocument}
+          />
         ))}
 
         {activity.length > 0 && (
@@ -437,6 +466,19 @@ function ContextChips({
       ))}
     </div>
   )
+}
+
+/** Proposals anchored to one message, or the unanchored ones when null. */
+function proposalsAfter(
+  conversation: Conversation | null,
+  messageId: string | null,
+): ProposalRecord[] {
+  const all = conversation?.proposals ?? []
+  if (messageId === null) {
+    const known = new Set((conversation?.messages ?? []).map((m) => m.message_id))
+    return all.filter((p) => !p.after_message_id || !known.has(p.after_message_id))
+  }
+  return all.filter((p) => p.after_message_id === messageId)
 }
 
 export function pendingRunOf(runs: RunRecord[]): string | null {

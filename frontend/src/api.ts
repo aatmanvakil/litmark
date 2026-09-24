@@ -233,6 +233,8 @@ export interface RunRecord {
 }
 
 export interface Conversation {
+  /** Offers made in this conversation, so a reload rebuilds their cards. */
+  proposals?: ProposalRecord[]
   conversation_id: string
   title: string
   backend_session_id: string | null
@@ -263,6 +265,51 @@ export interface MessageContext {
   /** The collection this message is scoped to. Membership is resolved
    *  server-side, so the client never sends `scope_document_ids`. */
   collection_id?: string | null
+}
+
+export type VersionType = 'published' | 'accepted_manuscript' | 'submitted_preprint'
+
+export interface AcquisitionVersion {
+  version_id: string
+  version_type: VersionType
+  url: string | null
+  host: string | null
+  license: string | null
+  retrievable: boolean
+  source: string
+  reason: string | null
+}
+
+export type ProposalStatus =
+  | 'pending'
+  | 'processing'
+  | 'confirmed'
+  | 'failed'
+  | 'declined'
+  | 'superseded'
+  | 'expired'
+
+export interface ProposalRecord {
+  proposal_id: string
+  status: ProposalStatus
+  query: string
+  work: {
+    title: string | null
+    authors: string | null
+    year: number | null
+    journal: string | null
+    doi: string | null
+  }
+  versions: AcquisitionVersion[]
+  canonical_filename: string
+  assign_collection_id: string | null
+  chosen_version_id: string | null
+  document_id: string | null
+  error: string | null
+  attempts: number
+  after_message_id: string | null
+  created_at: string
+  expires_at: string
 }
 
 // ------------------------------------------------------------------- api
@@ -427,6 +474,23 @@ export const api = {
     }),
   exportUrl: (id: string, format: 'markdown' | 'json') =>
     `/api/conversations/${encodeURIComponent(id)}/export?format=${format}&token=${encodeURIComponent(SESSION_TOKEN)}`,
+
+  proposals: () => request<{ proposals: ProposalRecord[] }>('/proposals'),
+  /** The only call in the client that causes a PDF to be fetched. */
+  confirmProposal: (proposalId: string, versionId: string) =>
+    request<{
+      duplicate: boolean
+      document: DocumentRecord
+      canonical_filename: string | null
+      proposal: ProposalRecord
+    }>(`/proposals/${encodeURIComponent(proposalId)}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ version_id: versionId }),
+    }),
+  declineProposal: (proposalId: string) =>
+    request<ProposalRecord>(`/proposals/${encodeURIComponent(proposalId)}/decline`, {
+      method: 'POST',
+    }),
 
   changes: () => request<{ changes: ChangeRecord[] }>('/changes'),
   undo: (changeId: string, expected_revision?: string) =>
