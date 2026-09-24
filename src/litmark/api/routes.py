@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..acquisition.fetch import FetchRefused
+from .. import collections as collections_module
 from ..agent.base import RunContext
 from ..agent.tools import dispatch
 from ..documents import QUEUED
@@ -177,14 +178,21 @@ class CollectionCreate(BaseModel):
     kind: Literal["project", "topic"]
     name: str = Field(max_length=200)
     description: str | None = None
+    parent_id: str | None = None
     document_ids: list[str] = Field(default_factory=list)
 
 
 class CollectionUpdate(BaseModel):
-    """``kind`` is deliberately absent: reclassifying is delete plus create."""
+    """``kind`` is deliberately absent: reclassifying is delete plus create.
+
+    ``parent_id`` is tri-state and cannot use ``None`` for "unchanged", since
+    ``None`` has to mean "move to the top level". Omit the field to leave the
+    parent alone; send ``null`` to detach.
+    """
 
     name: str | None = Field(default=None, max_length=200)
     description: str | None = None
+    parent_id: str | None = None
 
 
 class CollectionMembers(BaseModel):
@@ -541,7 +549,7 @@ def build_router() -> APIRouter:
         services = services_of(request)
         documents = [d.document_id for d in services.documents.list()]
         return {
-            "collections": [c.api_json() for c in services.collections.list()],
+            "collections": services.collections.api_list(),
             "unfiled": services.collections.unfiled(documents),
         }
 
@@ -555,6 +563,7 @@ def build_router() -> APIRouter:
             kind=body.kind,
             name=body.name,
             description=body.description,
+            parent_id=body.parent_id,
             documents=body.document_ids,
         )
         _publish_collection(services, collection.collection_id, collection.api_json())
@@ -565,8 +574,17 @@ def build_router() -> APIRouter:
         request: Request, collection_id: str, body: CollectionUpdate
     ) -> dict[str, Any]:
         services = services_of(request)
+        # "parent_id" absent means unchanged; present-and-null means detach.
+        parent = (
+            body.parent_id
+            if "parent_id" in body.model_fields_set
+            else collections_module.UNSET
+        )
         collection = services.collections.update(
-            collection_id, name=body.name, description=body.description
+            collection_id,
+            name=body.name,
+            description=body.description,
+            parent_id=parent,
         )
         _publish_collection(services, collection_id, collection.api_json())
         return collection.api_json()
@@ -574,10 +592,11 @@ def build_router() -> APIRouter:
     @router.delete("/collections/{collection_id}")
     async def delete_collection(request: Request, collection_id: str) -> dict[str, Any]:
         services = services_of(request)
-        released = services.collections.delete(collection_id)
+        result = services.collections.delete(collection_id)
         _publish_collection(services, collection_id, None)
-        # The papers themselves are untouched; only the classification is gone.
-        return {"deleted": collection_id, "documents_released": released}
+        # The papers themselves are untouched; only the classification is gone,
+        # and any subtopics move up to take its place.
+        return {"deleted": collection_id, **result}
 
     @router.put("/collections/{collection_id}/documents")
     async def set_collection_documents(

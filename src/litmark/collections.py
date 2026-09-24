@@ -28,8 +28,18 @@ TOPIC = "topic"
 KINDS = (PROJECT, TOPIC)
 
 MAX_NAME_LENGTH = 200
+# Deep enough for a real taxonomy, shallow enough that the sidebar stays
+# readable at the narrowest pane width.
+MAX_DEPTH = 5
 
 _COLLECTION_ID_RE = re.compile(r"^col-[0-9a-z][0-9a-z-]{0,30}$")
+
+
+class _Unset:
+    """Distinguishes "leave the parent alone" from "move it to the top"."""
+
+
+UNSET = _Unset()
 
 
 def normalize_name(name: str) -> str:
@@ -46,6 +56,10 @@ class Collection:
     kind: str
     name: str
     description: str | None = None
+    # A project is always a root; a topic may sit under a project or another
+    # topic. See `validate_parent` — the rule is about projects, not about
+    # kinds matching, and Project -> Topic is the case that matters most.
+    parent_id: str | None = None
     documents: list[str] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
@@ -60,12 +74,15 @@ class Collection:
         }
         if self.description:
             payload["description"] = self.description
+        if self.parent_id:
+            payload["parent_id"] = self.parent_id
         return payload
 
     def api_json(self) -> dict[str, Any]:
         payload = self.to_json()
         payload["collection_id"] = self.collection_id
         payload["document_count"] = len(self.documents)
+        payload.setdefault("parent_id", None)
         return payload
 
     @classmethod
@@ -76,6 +93,7 @@ class Collection:
             kind=data.get("kind") or PROJECT,
             name=data.get("name") or collection_id,
             description=data.get("description"),
+            parent_id=data.get("parent_id") or None,
             documents=[str(item) for item in documents],
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
@@ -109,10 +127,38 @@ class CollectionStore:
 
     def all(self) -> dict[str, Collection]:
         raw = self._load_raw()
-        return {
+        loaded = {
             collection_id: Collection.from_json(collection_id, payload)
             for collection_id, payload in raw["collections"].items()
         }
+        # collections.json is hand-editable, so a parent it names may be
+        # missing, self-referential, in a cycle, or set on a project. Drop the
+        # edge and keep the collection rather than failing to load.
+        for collection in loaded.values():
+            parent = collection.parent_id
+            if parent is None:
+                continue
+            if (
+                collection.kind == PROJECT
+                or parent == collection.collection_id
+                or parent not in loaded
+                or collection.collection_id
+                in self._ancestor_ids(raw["collections"], parent)
+            ):
+                collection.parent_id = None
+        return loaded
+
+    def api_list(self) -> list[dict[str, Any]]:
+        """Collections with their path and subtree size, for the UI and agent."""
+        out = []
+        for collection in self.list():
+            payload = collection.api_json()
+            payload["path"] = self.path_of(collection.collection_id)
+            payload["descendant_count"] = len(
+                self.descendant_ids(collection.collection_id)
+            ) - 1
+            out.append(payload)
+        return out
 
     def list(self) -> list[Collection]:
         return sorted(
@@ -145,6 +191,7 @@ class CollectionStore:
         kind: str,
         name: str,
         description: str | None = None,
+        parent_id: str | None = None,
         documents: list[str] | None = None,
     ) -> Collection:
         clean = self._validated_name(name)
@@ -155,6 +202,7 @@ class CollectionStore:
         with self._lock:
             raw = self._load_raw()
             self._require_unique_name(raw, kind, clean, ignoring=None)
+            self.validate_parent(raw, kind, parent_id, moving=None)
             collection_id = self.allocate_id()
             now = utcnow()
             collection = Collection(
@@ -162,6 +210,7 @@ class CollectionStore:
                 kind=kind,
                 name=clean,
                 description=description or None,
+                parent_id=parent_id,
                 documents=_unique(documents or []),
                 created_at=now,
                 updated_at=now,
@@ -176,8 +225,14 @@ class CollectionStore:
         *,
         name: str | None = None,
         description: str | None = None,
+        parent_id: str | None | _Unset = UNSET,
     ) -> Collection:
-        """Rename or re-describe. ``kind`` is immutable, see the module docstring."""
+        """Rename, re-describe or move. ``kind`` stays immutable.
+
+        ``parent_id`` is tri-state: absent means unchanged, ``None`` detaches
+        to the top level, and an ID moves it. A plain ``None`` default could
+        not tell "leave it alone" from "make it a root".
+        """
         with self._lock:
             raw = self._load_raw()
             payload = raw["collections"].get(collection_id)
@@ -195,12 +250,25 @@ class CollectionStore:
                 payload["description"] = description or None
                 if not payload["description"]:
                     payload.pop("description", None)
+            if not isinstance(parent_id, _Unset):
+                self.validate_parent(
+                    raw, payload.get("kind", PROJECT), parent_id, moving=collection_id
+                )
+                if parent_id:
+                    payload["parent_id"] = parent_id
+                else:
+                    payload.pop("parent_id", None)
             payload["updated_at"] = utcnow()
             self._write(raw)
             return Collection.from_json(collection_id, payload)
 
-    def delete(self, collection_id: str) -> int:
-        """Forget a classification. The papers it held are untouched."""
+    def delete(self, collection_id: str) -> dict[str, int]:
+        """Forget a classification. The papers it held are untouched.
+
+        Children are spliced up to the deleted collection's own parent rather
+        than orphaned, which would lose the structure, or refused, which would
+        leave a chat user unable to remove anything with a subtopic.
+        """
         with self._lock:
             raw = self._load_raw()
             payload = raw["collections"].pop(collection_id, None)
@@ -208,8 +276,21 @@ class CollectionStore:
                 raise NotFound(
                     f"No collection {collection_id!r}.", collection_id=collection_id
                 )
+            grandparent = payload.get("parent_id")
+            reparented = 0
+            for other in raw["collections"].values():
+                if other.get("parent_id") == collection_id:
+                    if grandparent:
+                        other["parent_id"] = grandparent
+                    else:
+                        other.pop("parent_id", None)
+                    other["updated_at"] = utcnow()
+                    reparented += 1
             self._write(raw)
-            return len(payload.get("documents") or [])
+            return {
+                "documents_released": len(payload.get("documents") or []),
+                "children_reparented": reparented,
+            }
 
     def set_documents(self, collection_id: str, document_ids: list[str]) -> Collection:
         return self._mutate_members(collection_id, lambda _: _unique(document_ids))
@@ -266,6 +347,102 @@ class CollectionStore:
             payload["updated_at"] = utcnow()
             self._write(raw)
             return Collection.from_json(collection_id, payload)
+
+    # ------------------------------------------------------------- hierarchy
+
+    def validate_parent(
+        self, raw: dict[str, Any], kind: str, parent_id: str | None, *, moving: str | None
+    ) -> None:
+        """A project is always a root; a topic may sit under anything.
+
+        Every forbidden case reduces to that one rule, so this is deliberately
+        not a "kinds must match" check — Project -> Topic is the case the whole
+        feature exists for.
+        """
+        if kind == PROJECT:
+            if parent_id:
+                raise InvalidInput(
+                    "A project is always a top-level collection, so it cannot "
+                    "be placed inside another collection. Topics can be nested.",
+                    collection_id=moving,
+                )
+            return
+        if parent_id is None:
+            return
+        collections = raw["collections"]
+        if parent_id not in collections:
+            raise NotFound(f"No collection {parent_id!r}.", collection_id=parent_id)
+        if moving is not None and parent_id == moving:
+            raise InvalidInput("A collection cannot be inside itself.")
+        ancestors = self._ancestor_ids(collections, parent_id)
+        if moving is not None and moving in ancestors:
+            raise InvalidInput(
+                "That would put a collection inside one of its own subtopics."
+            )
+        # +1 for the collection being placed, on top of its parent's chain.
+        if len(ancestors) + 2 > MAX_DEPTH:
+            raise InvalidInput(
+                f"Collections can nest {MAX_DEPTH} levels deep; that would be deeper."
+            )
+
+    def _ancestor_ids(self, collections: dict[str, Any], start: str) -> list[str]:
+        """Ancestors of ``start``, nearest first.
+
+        Hard-capped by the number of collections: the file is hand-editable,
+        so a cycle written by hand must degrade rather than spin forever.
+        """
+        chain: list[str] = []
+        seen = {start}
+        current = collections.get(start, {}).get("parent_id")
+        for _ in range(len(collections) + 1):
+            if not current or current in seen or current not in collections:
+                break
+            chain.append(current)
+            seen.add(current)
+            current = collections[current].get("parent_id")
+        return chain
+
+    def children_of(self, collection_id: str | None) -> list[Collection]:
+        return [c for c in self.list() if c.parent_id == collection_id]
+
+    def descendant_ids(self, collection_id: str) -> list[str]:
+        """``collection_id`` first, then every collection beneath it."""
+        by_parent: dict[str | None, list[str]] = {}
+        for collection in self.list():
+            by_parent.setdefault(collection.parent_id, []).append(collection.collection_id)
+        found = [collection_id]
+        seen = {collection_id}
+        queue = [collection_id]
+        while queue:
+            current = queue.pop(0)
+            for child in by_parent.get(current, []):
+                if child in seen:
+                    continue  # A hand-written cycle must not loop forever.
+                seen.add(child)
+                found.append(child)
+                queue.append(child)
+        return found
+
+    def scope_document_ids(self, collection_id: str) -> list[str]:
+        """Every document in a collection or in anything beneath it."""
+        collections = self.all()
+        found: list[str] = []
+        for member_id in self.descendant_ids(collection_id):
+            collection = collections.get(member_id)
+            if collection is None:
+                continue
+            for document_id in collection.documents:
+                if document_id not in found:
+                    found.append(document_id)
+        return found
+
+    def path_of(self, collection_id: str) -> str:
+        """``International Macro / Dominant Currency``, for addressing by name."""
+        raw = self._load_raw()
+        names = [raw["collections"].get(collection_id, {}).get("name", collection_id)]
+        for ancestor in self._ancestor_ids(raw["collections"], collection_id):
+            names.append(raw["collections"][ancestor].get("name", ancestor))
+        return " / ".join(reversed(names))
 
     def _validated_name(self, name: str) -> str:
         clean = normalize_name(name)
