@@ -157,6 +157,55 @@ uv run litmark serve ./my-research --reload
 `npm run dev` runs the frontend with hot reload against a server started
 separately on port 8765.
 
+### Paper lookup
+
+Lookup is off until configured. Add to the project's `project.toml`:
+
+```toml
+[acquisition]
+mailto = "you@example.edu"
+crossref = true
+openalex = true
+unpaywall = true
+arxiv = true
+```
+
+`mailto` is sent to providers on every lookup — in the User-Agent to
+Crossref, and as a URL parameter to Unpaywall, which rejects requests
+without one. Crossref and OpenAlex use it for their politeness pools.
+
+**OpenAlex additionally requires an API key**, and it is read only from the
+environment:
+
+```bash
+export LITMARK_OPENALEX_API_KEY=...
+```
+
+Never put it in `project.toml`. That file lives in the project directory,
+which usually means a synced folder, a backup, and sometimes a git
+repository — a key there is a key published. With no key set, OpenAlex
+reports itself unavailable and the other three providers carry on.
+
+`litmark doctor` lists each provider as ready or unavailable and says why.
+It reports whether a key is present, never its value.
+
+Nothing is downloaded by a lookup, and no agent tool can download at all: a
+PDF is fetched only when you click a version on an offer card.
+
+### A live provider check, by hand
+
+The automated suite never touches the network. To confirm the providers
+really answer, run the one script that does — against a scratch project,
+never a real library:
+
+```bash
+LITMARK_LIVE_CHECK=1 uv run python scripts/live_metadata_check.py ./scratch 10.1257/aer.20150572
+```
+
+It makes at most one request per provider, prints the candidates with every
+URL redacted, and downloads nothing. Without `LITMARK_LIVE_CHECK=1` it
+refuses to run, so it cannot fire from a script or from CI.
+
 ### Tests
 
 ```bash
