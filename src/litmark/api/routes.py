@@ -863,7 +863,14 @@ def build_router() -> APIRouter:
             # unknown collection is a 404 before the run starts.
             collection = services.collections.get(context.collection_id)
             context.collection_name = collection.name
-            context.scope_document_ids = list(collection.documents)
+            # The subtree, not just direct members: scoping to a parent whose
+            # papers all sit in subtopics must not silently find nothing.
+            context.scope_document_ids = services.collections.scope_document_ids(
+                context.collection_id
+            )
+            context.scope_collection_ids = services.collections.descendant_ids(
+                context.collection_id
+            )
         return services.runner.submit(
             conversation_id=conversation_id,
             prompt=body.prompt,
