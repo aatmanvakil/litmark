@@ -17,6 +17,7 @@ certificate verification.
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import time
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 import httpx
+
+from .redact import safe_details, safe_url
 
 CONNECT_TIMEOUT = 5.0
 READ_TIMEOUT = 10.0
@@ -33,17 +36,41 @@ CHUNK = 64 * 1024
 
 PDF_MAGIC = b"%PDF-"
 PDF_TYPES = ("application/pdf", "application/x-pdf")
+JSON_TYPES = ("application/json", "application/vnd.citationstyles.csl+json")
+XML_TYPES = ("application/atom+xml", "application/xml", "text/xml")
+
+#: The only hosts a metadata query may reach. `fetch_pdf` deliberately has no
+#: allowlist — a PDF URL comes from a provider and cannot be enumerated — but
+#: metadata goes to exactly these four, so it can and must be.
+METADATA_HOSTS = frozenset(
+    {
+        "api.crossref.org",
+        "api.openalex.org",
+        "api.unpaywall.org",
+        "export.arxiv.org",
+    }
+)
+
+#: A metadata response larger than this is a bug or an attack, not an answer.
+MAX_METADATA_BYTES = 2 * 1024 * 1024
 
 USER_AGENT = "litmark/0.1.0 (+https://github.com/tlamadon/litmark)"
 
 
 class FetchRefused(Exception):
-    """The request was not made, or was stopped, for a stated reason."""
+    """The request was not made, or was stopped, for a stated reason.
+
+    Details are redacted on the way in, so an API key or a contact address
+    cannot escape through an exception that is logged or shown.
+    """
 
     def __init__(self, reason: str, **details: Any) -> None:
         super().__init__(reason)
         self.reason = reason
-        self.details = details
+        self.details = safe_details(details)
+
+    def __str__(self) -> str:
+        return self.reason
 
 
 Resolver = Callable[[str], list[str]]
@@ -237,3 +264,136 @@ def fetch_pdf(
         client.close()
         if owned:
             pinned.close()
+
+
+# --------------------------------------------------------------- metadata
+
+
+@dataclass
+class FetchedText:
+    body: str
+    url: str
+    host: str
+    content_type: str
+    #: Seconds the provider asked us to wait, when it said so.
+    retry_after: float | None = None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """`Retry-After` is either seconds or an HTTP date; accept the former."""
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw.strip()))
+    except ValueError:
+        # An HTTP-date form. Honoured as "wait, but we do not know how long",
+        # which the caller turns into "skip this provider for this lookup".
+        return 0.0
+
+
+def fetch_metadata(
+    url: str,
+    *,
+    accept: tuple[str, ...],
+    header: str,
+    host_allowlist: frozenset[str] = METADATA_HOSTS,
+    headers: dict[str, str] | None = None,
+    max_bytes: int = MAX_METADATA_BYTES,
+    transport: httpx.BaseTransport | None = None,
+    resolver: Resolver = system_resolver,
+    now: Callable[[], float] = time.monotonic,
+) -> FetchedText:
+    """One metadata request, to one of four known hosts.
+
+    Shares the pinned-address transport, the https-only rule, the redirect
+    cap and the timeouts with `fetch_pdf`, and adds a host allowlist that a
+    PDF download cannot have.
+    """
+    deadline = now() + TOTAL_BUDGET
+    pinned = transport or PinnedAddressTransport(resolver=resolver)
+    owned = transport is None
+    client = httpx.Client(
+        transport=pinned,
+        timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT),
+        follow_redirects=False,
+        headers={"User-Agent": USER_AGENT, "Accept": header, **(headers or {})},
+    )
+    current = url
+    try:
+        for hop in range(MAX_REDIRECTS + 1):
+            if now() > deadline:
+                raise FetchRefused("timeout", stage="before_request", url=current)
+            hostname, current = check_url(current)
+            # Checked before the connection, and again on every hop: a
+            # redirect must not walk off the allowlist.
+            if hostname not in host_allowlist:
+                raise FetchRefused("host_not_allowed", host=hostname, url=current)
+
+            with client.stream("GET", current) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location or hop == MAX_REDIRECTS:
+                        raise FetchRefused("too_many_redirects", url=current)
+                    current = str(httpx.URL(current).join(location))
+                    continue
+                if response.status_code in (429, 503):
+                    # The provider asked us to back off. One lookup, one
+                    # attempt: retrying here would turn a rate limit into a
+                    # storm.
+                    raise FetchRefused(
+                        "rate_limited",
+                        status=response.status_code,
+                        retry_after=_retry_after_seconds(response),
+                        host=hostname,
+                    )
+                if response.status_code in (401, 403):
+                    raise FetchRefused("access_denied", status=response.status_code)
+                if response.status_code == 404:
+                    raise FetchRefused("not_found", status=404)
+                if response.status_code >= 400:
+                    raise FetchRefused("http_error", status=response.status_code)
+
+                content_type = (response.headers.get("content-type") or "").split(";")[0]
+                if content_type.strip().lower() not in accept:
+                    raise FetchRefused("unexpected_content_type", content_type=content_type)
+
+                body = bytearray()
+                for chunk in response.iter_bytes(CHUNK):
+                    if now() > deadline:
+                        raise FetchRefused("timeout", stage="streaming", url=current)
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise FetchRefused("too_large", limit=max_bytes)
+
+            return FetchedText(
+                body=bytes(body).decode("utf-8", errors="replace"),
+                url=current,
+                host=hostname,
+                content_type=content_type,
+            )
+        raise FetchRefused("too_many_redirects", url=current)
+    except httpx.TimeoutException as exc:
+        raise FetchRefused("timeout", error=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise FetchRefused("transport_error", error=str(exc)) from exc
+    finally:
+        client.close()
+        if owned:
+            pinned.close()
+
+
+def fetch_json(url: str, **kwargs: Any) -> Any:
+    """A metadata response parsed as JSON, or a stated refusal."""
+    fetched = fetch_metadata(url, accept=JSON_TYPES, header="application/json", **kwargs)
+    try:
+        return json.loads(fetched.body)
+    except json.JSONDecodeError as exc:
+        raise FetchRefused("malformed_json", error=str(exc), url=fetched.url) from exc
+
+
+def fetch_text(url: str, **kwargs: Any) -> str:
+    """A metadata response as text, for arXiv's Atom."""
+    return fetch_metadata(
+        url, accept=XML_TYPES, header="application/atom+xml", **kwargs
+    ).body
