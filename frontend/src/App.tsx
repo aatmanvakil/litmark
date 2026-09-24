@@ -530,8 +530,12 @@ export function App() {
             unfiled={state.unfiled ?? []}
             activeCollectionId={activeCollectionId}
             onSelectCollection={setActiveCollectionId}
-            onCreateCollection={async (kind, name) => {
-              await api.createCollection(kind, name)
+            onCreateCollection={async (kind, name, parentId) => {
+              await api.createCollection(kind, name, [], parentId ?? null)
+              await refreshState()
+            }}
+            onMoveCollection={async (collectionId, parentId) => {
+              await api.moveCollection(collectionId, parentId)
               await refreshState()
             }}
             onRenameCollection={async (collectionId, name) => {

@@ -51,9 +51,44 @@ const STATE = {
     {
       collection_id: 'col-001',
       kind: 'project',
-      name: 'Minimum wage paper',
+      name: 'International Macro',
+      parent_id: null,
+      path: 'International Macro',
+      documents: [],
+      document_count: 0,
+      created_at: '2026-09-23T00:00:00Z',
+      updated_at: '2026-09-23T00:00:00Z',
+    },
+    {
+      collection_id: 'col-002',
+      kind: 'topic',
+      name: 'Dominant Currency',
+      parent_id: 'col-001',
+      path: 'International Macro / Dominant Currency',
       documents: ['doc-001'],
       document_count: 1,
+      created_at: '2026-09-23T00:00:00Z',
+      updated_at: '2026-09-23T00:00:00Z',
+    },
+    {
+      collection_id: 'col-003',
+      kind: 'topic',
+      name: 'Deeply Nested',
+      parent_id: 'col-002',
+      path: 'International Macro / Dominant Currency / Deeply Nested',
+      documents: [],
+      document_count: 0,
+      created_at: '2026-09-23T00:00:00Z',
+      updated_at: '2026-09-23T00:00:00Z',
+    },
+    {
+      collection_id: 'col-004',
+      kind: 'topic',
+      name: 'Orphaned Topic',
+      parent_id: 'col-missing',
+      path: 'Orphaned Topic',
+      documents: [],
+      document_count: 0,
       created_at: '2026-09-23T00:00:00Z',
       updated_at: '2026-09-23T00:00:00Z',
     },
@@ -107,6 +142,9 @@ function buildDom() {
     window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
   }
   window.scrollTo = () => {}
+  // Not stubbed by jsdom; the sidebar uses both for create/rename/delete.
+  window.prompt = () => null
+  window.confirm = () => false
   return dom
 }
 
@@ -140,4 +178,33 @@ test('the built application bundle runs and renders without throwing', async () 
   const text = root.textContent ?? ''
   assert.ok(!text.includes('Opening the project…'), `stuck on the loading state: ${text.slice(0, 200)}`)
   assert.ok(text.includes('Demo'), `project name not rendered: ${text.slice(0, 300)}`)
+})
+
+test('the collection tree renders nesting, and orphans survive it', async () => {
+  const { window } = buildDom()
+  window.eval(readFileSync(join(here, 'bundle', 'app.mjs'), 'utf8'))
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const text = window.document.querySelector('#app').textContent
+
+  // Every level is present, including one whose parent does not exist.
+  assert.ok(text.includes('International Macro'), 'root missing')
+  assert.ok(text.includes('Dominant Currency'), 'child missing')
+  assert.ok(text.includes('Deeply Nested'), 'grandchild missing')
+  assert.ok(text.includes('Orphaned Topic'), 'a dangling parent lost its collection')
+
+  // A twisty exists for a parent and points at a real subtree element.
+  const twisty = window.document.querySelector('.twisty[aria-controls]')
+  assert.ok(twisty, 'no expandable node rendered')
+  const controlled = twisty.getAttribute('aria-controls')
+  assert.ok(
+    window.document.getElementById(controlled),
+    `aria-controls="${controlled}" points at nothing`,
+  )
+
+  // Nested buttons would be invalid HTML and jsdom will not flag it.
+  assert.equal(
+    window.document.querySelectorAll('button button').length,
+    0,
+    'a button is nested inside another button',
+  )
 })

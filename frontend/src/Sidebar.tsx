@@ -6,7 +6,7 @@
  * failed never makes a readable PDF look unavailable.
  */
 
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
 import {
   api,
@@ -17,6 +17,9 @@ import {
   type NoteSummary,
   type SearchHit,
 } from './api'
+
+import { CollectionTree } from './CollectionTree'
+import { ancestorsOf, buildTree, flatten, rollupDocuments } from './collections'
 
 export const UNFILED = '__unfiled__'
 
@@ -40,7 +43,12 @@ export interface SidebarProps {
   onUndo: (change: ChangeRecord) => void
   onLoadChanges: () => Promise<void>
   onSelectCollection: (collectionId: string | null) => void
-  onCreateCollection: (kind: CollectionKind, name: string) => Promise<void>
+  onCreateCollection: (
+    kind: CollectionKind,
+    name: string,
+    parentId?: string | null,
+  ) => Promise<void>
+  onMoveCollection: (collectionId: string, parentId: string | null) => Promise<void>
   onRenameCollection: (collectionId: string, name: string) => Promise<void>
   onDeleteCollection: (collectionId: string) => Promise<void>
   onAssign: (collectionId: string, documentId: string, member: boolean) => Promise<void>
@@ -55,6 +63,33 @@ export function Sidebar(props: SidebarProps) {
   const [dragging, setDragging] = useState(false)
   const [searching, setSearching] = useState(false)
   const [assigning, setAssigning] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+
+  const tree = buildTree(props.collections)
+  const nodesById = new Map(
+    flatten(tree).map((node) => [node.collection.collection_id, node]),
+  )
+
+  // Ancestors of the selection are in scope without being selected, because a
+  // parent's scope includes everything under it.
+  const inScopeIds = new Set(
+    props.activeCollectionId && props.activeCollectionId !== UNFILED
+      ? ancestorsOf(props.collections, props.activeCollectionId)
+      : [],
+  )
+
+  // Reveal a selection made elsewhere — the agent can change scope too.
+  useEffect(() => {
+    if (!props.activeCollectionId || props.activeCollectionId === UNFILED) return
+    const reveal = ancestorsOf(props.collections, props.activeCollectionId)
+    if (reveal.length === 0) return
+    setCollapsed((current) => {
+      if (!reveal.some((id) => current.has(id))) return current
+      const next = new Set(current)
+      for (const id of reveal) next.delete(id)
+      return next
+    })
+  }, [props.activeCollectionId, props.collections])
 
   const active = props.collections.find(
     (collection) => collection.collection_id === props.activeCollectionId,
@@ -66,7 +101,12 @@ export function Sidebar(props: SidebarProps) {
       ? props.documents
       : props.activeCollectionId === UNFILED
         ? props.documents.filter((d) => props.unfiled.includes(d.document_id))
-        : props.documents.filter((d) => active?.documents.includes(d.document_id))
+        : (() => {
+            // The subtree, so the list matches what a scoped chat can read.
+            const node = nodesById.get(props.activeCollectionId)
+            const members = node ? rollupDocuments(node) : new Set<string>()
+            return props.documents.filter((d) => members.has(d.document_id))
+          })()
 
   const runSearch = async (value: string): Promise<void> => {
     setQuery(value)
@@ -193,61 +233,69 @@ export function Sidebar(props: SidebarProps) {
           </button>
         )}
         {(['project', 'topic'] as CollectionKind[]).map((kind) => {
-          const group = props.collections.filter((collection) => collection.kind === kind)
+          // Only roots are grouped by kind; children inherit their root's.
+          const group = tree.filter((node) => node.collection.kind === kind)
           if (group.length === 0) return null
           return (
             <div key={kind} class="collection-group">
               <h4 class="muted">{kind === 'project' ? 'Projects' : 'Topics'}</h4>
-              <ul class="list">
-                {group.map((collection) => (
-                  <li key={collection.collection_id}>
-                    <button
-                      type="button"
-                      class={
-                        props.activeCollectionId === collection.collection_id
-                          ? 'entry active'
-                          : 'entry'
-                      }
-                      onClick={() =>
-                        props.onSelectCollection(
-                          props.activeCollectionId === collection.collection_id
-                            ? null
-                            : collection.collection_id,
-                        )
-                      }
-                    >
-                      <strong>{collection.name}</strong>
-                      <span class="muted">{collection.document_count} papers</span>
-                    </button>
-                    <div class="entry-actions">
-                      <button
-                        type="button"
-                        class="link"
-                        onClick={() => {
-                          const name = window.prompt('Rename', collection.name)
-                          if (name?.trim())
-                            void props.onRenameCollection(collection.collection_id, name.trim())
-                        }}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        class="link"
-                        onClick={() => {
-                          const ok = window.confirm(
-                            `Remove the ${collection.kind} "${collection.name}"?\n\n` +
-                              'The papers in it are not deleted.',
-                          )
-                          if (ok) void props.onDeleteCollection(collection.collection_id)
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <CollectionTree
+                nodes={group}
+                activeCollectionId={props.activeCollectionId}
+                inScopeIds={inScopeIds}
+                collapsed={collapsed}
+                onToggleExpanded={(id) =>
+                  setCollapsed((current) => {
+                    const next = new Set(current)
+                    if (next.has(id)) next.delete(id)
+                    else next.add(id)
+                    return next
+                  })
+                }
+                onSelect={(id) =>
+                  props.onSelectCollection(props.activeCollectionId === id ? null : id)
+                }
+                onAddChild={(parent) => {
+                  const name = window.prompt(`Name the subtopic under "${parent.name}"`)
+                  if (name?.trim())
+                    void props.onCreateCollection('topic', name.trim(), parent.collection_id)
+                }}
+                onRename={(collection) => {
+                  const name = window.prompt('Rename', collection.name)
+                  if (name?.trim())
+                    void props.onRenameCollection(collection.collection_id, name.trim())
+                }}
+                onMove={(collection) => {
+                  const choices = props.collections.filter(
+                    (other) => other.collection_id !== collection.collection_id,
+                  )
+                  const menu = choices
+                    .map((other, index) => `${index + 1}. ${other.path ?? other.name}`)
+                    .join('\n')
+                  const answer = window.prompt(
+                    `Move "${collection.name}" under which collection?\n\n` +
+                      `${menu}\n\nEnter a number, or 0 for the top level.`,
+                  )
+                  if (answer === null) return
+                  const index = Number.parseInt(answer, 10)
+                  if (Number.isNaN(index)) return
+                  const parent = index === 0 ? null : choices[index - 1]?.collection_id ?? null
+                  void props.onMoveCollection(collection.collection_id, parent)
+                }}
+                onDelete={(collection) => {
+                  const node = nodesById.get(collection.collection_id)
+                  const children = node?.children.length ?? 0
+                  const ok = window.confirm(
+                    `Remove the ${collection.kind} "${collection.name}"?\n\n` +
+                      'The papers in it are not deleted.' +
+                      (children > 0
+                        ? `\n\nIts ${children} subcollection${children === 1 ? '' : 's'} ` +
+                          'will move up one level.'
+                        : ''),
+                  )
+                  if (ok) void props.onDeleteCollection(collection.collection_id)
+                }}
+              />
             </div>
           )
         })}
