@@ -64,6 +64,7 @@ export function Sidebar(props: SidebarProps) {
   const [searching, setSearching] = useState(false)
   const [assigning, setAssigning] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [assignFilter, setAssignFilter] = useState('')
 
   const tree = buildTree(props.collections)
   const nodesById = new Map(
@@ -370,30 +371,68 @@ export function Sidebar(props: SidebarProps) {
                 <IngestionStatus document={document} />
               </button>
               {assigning === document.document_id && (
-                <ul class="assign-popover">
-                  {props.collections.map((collection) => {
-                    const member = collection.documents.includes(document.document_id)
-                    return (
-                      <li key={collection.collection_id}>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={member}
-                            onChange={() =>
-                              void props.onAssign(
-                                collection.collection_id,
-                                document.document_id,
-                                !member,
-                              )
-                            }
-                          />
-                          {collection.name}
-                          <span class="muted"> · {collection.kind}</span>
-                        </label>
-                      </li>
-                    )
-                  })}
-                </ul>
+                <div
+                  class="assign-popover"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') setAssigning(null)
+                  }}
+                >
+                  <input
+                    type="search"
+                    placeholder="Filter collections"
+                    value={assignFilter}
+                    onInput={(event) =>
+                      setAssignFilter((event.target as HTMLInputElement).value)
+                    }
+                    aria-label="Filter collections"
+                  />
+                  <ul>
+                    {props.collections
+                      .slice()
+                      .sort((a, b) =>
+                        (a.path ?? a.name).localeCompare(b.path ?? b.name),
+                      )
+                      .filter((collection) =>
+                        (collection.path ?? collection.name)
+                          .toLowerCase()
+                          .includes(assignFilter.trim().toLowerCase()),
+                      )
+                      .map((collection) => {
+                        const member = collection.documents.includes(document.document_id)
+                        // A paper can be in scope through an ancestor without
+                        // being a direct member; an unticked box beside an
+                        // in-scope paper would otherwise read as a lie.
+                        const node = nodesById.get(collection.collection_id)
+                        const inherited =
+                          !member && node
+                            ? rollupDocuments(node).has(document.document_id)
+                            : false
+                        return (
+                          <li key={collection.collection_id}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={member}
+                                onChange={() =>
+                                  void props.onAssign(
+                                    collection.collection_id,
+                                    document.document_id,
+                                    !member,
+                                  )
+                                }
+                              />
+                              <span class="assign-path">
+                                {collection.path ?? collection.name}
+                              </span>
+                              {inherited && (
+                                <span class="muted"> · via a subcollection</span>
+                              )}
+                            </label>
+                          </li>
+                        )
+                      })}
+                  </ul>
+                </div>
               )}
               <div class="entry-actions">
                 {props.collections.length > 0 && (
@@ -402,9 +441,12 @@ export function Sidebar(props: SidebarProps) {
                     class="link"
                     aria-expanded={assigning === document.document_id}
                     onClick={() =>
-                      setAssigning(
-                        assigning === document.document_id ? null : document.document_id,
-                      )
+                      {
+                        setAssignFilter('')
+                        setAssigning(
+                          assigning === document.document_id ? null : document.document_id,
+                        )
+                      }
                     }
                   >
                     Collections…
