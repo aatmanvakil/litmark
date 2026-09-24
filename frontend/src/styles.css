@@ -1143,9 +1143,9 @@ select {
   margin: 0.25rem 0 0.5rem;
   padding: 0.4rem 0.5rem;
   list-style: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--rule);
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .sidebar .assign-popover li {
