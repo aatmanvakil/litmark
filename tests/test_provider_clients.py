@@ -357,3 +357,176 @@ def test_the_sources_share_one_limiter():
     metadata, versions = build_sources(config(), limiter=shared)
 
     assert all(source.limiter is shared for source in metadata + versions)
+
+
+# ------------------------------------------------- independent degradation
+
+
+class Failing:
+    """A source that always raises, to prove the others survive it."""
+
+    def __init__(self, name, error):
+        self.name = name
+        self._error = error
+
+    def works(self, query):
+        raise self._error
+
+    def versions(self, work):
+        raise self._error
+
+
+class Fixed:
+    def __init__(self, name, works=(), versions=()):
+        self.name = name
+        self._works = list(works)
+        self._versions = list(versions)
+
+    def works(self, query):
+        return list(self._works)
+
+    def versions(self, work):
+        return list(self._versions)
+
+
+def test_one_dead_metadata_provider_does_not_kill_the_search():
+    from litmark.acquisition import resolve
+    from litmark.acquisition.providers import crossref_works
+
+    good = Fixed("crossref", works=crossref_works(load("crossref_work.json")))
+    bad = Failing("openalex", FetchRefused("rate_limited", retry_after=90))
+
+    result = resolve("exchange rate", metadata_sources=[bad, good])
+
+    assert result.candidates, "a failing provider emptied the results"
+    assert result.failed_providers == ["openalex"]
+    assert any("openalex" in w for w in result.warnings)
+
+
+def test_one_dead_version_provider_leaves_the_others_attached():
+    from litmark.acquisition import resolve
+    from litmark.acquisition.providers import crossref_works, unpaywall_versions
+
+    works = Fixed("crossref", works=crossref_works(load("crossref_work.json")))
+    good = Fixed("unpaywall", versions=unpaywall_versions(load("unpaywall_open.json")))
+    bad = Failing("arxiv", FetchRefused("timeout"))
+
+    result = resolve(
+        "exchange rate", metadata_sources=[works], version_sources=[bad, good]
+    )
+
+    assert result.candidates[0].versions, "a version provider's failure lost the rest"
+    assert result.failed_providers == ["arxiv"]
+
+
+def test_a_rate_limit_warning_says_how_long_to_wait():
+    from litmark.acquisition import resolve
+
+    bad = Failing("crossref", FetchRefused("rate_limited", retry_after=90.0))
+
+    result = resolve("x", metadata_sources=[bad])
+
+    assert "about 90s" in " ".join(result.warnings)
+
+
+def test_a_warning_never_leaks_a_key_or_address():
+    from litmark.acquisition import resolve
+
+    bad = Failing(
+        "openalex",
+        FetchRefused("http_error", url=f"https://api.openalex.org/w?api_key={KEY}"),
+    )
+
+    result = resolve("x", metadata_sources=[bad])
+
+    assert KEY not in " ".join(result.warnings)
+
+
+def test_every_provider_failing_is_reported_not_silent():
+    from litmark.acquisition import resolve
+
+    result = resolve(
+        "x",
+        metadata_sources=[
+            Failing("crossref", FetchRefused("timeout")),
+            Failing("openalex", FetchRefused("access_denied")),
+        ],
+    )
+
+    assert result.candidates == []
+    assert sorted(result.failed_providers) == ["crossref", "openalex"]
+
+
+# ----------------------------------------------------------------- dedup
+
+
+def test_the_same_doi_from_two_providers_merges():
+    from litmark.acquisition import resolve
+    from litmark.acquisition.providers import crossref_works, openalex_works
+
+    crossref = Fixed("crossref", works=crossref_works(load("crossref_work.json")))
+    openalex = Fixed("openalex", works=openalex_works(load("openalex_work.json")))
+
+    result = resolve("exchange rate", metadata_sources=[crossref, openalex])
+
+    assert len(result.candidates) == 1
+
+
+def test_a_doi_less_duplicate_merges_on_title_and_year():
+    """arXiv and Crossref describe one preprint; only one has a DOI."""
+    from litmark.acquisition import resolve
+
+    with_doi = Work(
+        title="Exchange Rate Disconnect", year=2021, doi="10.1/x", source="crossref"
+    )
+    without = Work(title="exchange   rate disconnect!", year=2021, source="arxiv")
+
+    result = resolve(
+        "exchange rate", metadata_sources=[Fixed("a", [with_doi]), Fixed("b", [without])]
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].work.doi == "10.1/x"
+
+
+def test_a_different_year_is_a_different_work():
+    from litmark.acquisition import resolve
+
+    first = Work(title="Same Title", year=2020, source="a")
+    second = Work(title="Same Title", year=2021, source="b")
+
+    result = resolve("x", metadata_sources=[Fixed("a", [first]), Fixed("b", [second])])
+
+    assert len(result.candidates) == 2
+
+
+def test_merging_fills_gaps_without_overwriting():
+    from litmark.acquisition import resolve
+
+    sparse = Work(title="A Work", doi="10.1/x", source="crossref")
+    rich = Work(title="A Work", doi="10.1/x", year=2021, journal="JPE", source="openalex")
+
+    result = resolve("x", metadata_sources=[Fixed("a", [sparse]), Fixed("b", [rich])])
+
+    merged = result.candidates[0].work
+    assert (merged.year, merged.journal) == (2021, "JPE")
+    assert merged.title == "A Work"
+
+
+def test_title_key_ignores_punctuation_and_case():
+    from litmark.acquisition import title_key
+
+    assert title_key(Work(title="The Cost-of-Living Index!", year=2021)) == title_key(
+        Work(title="the cost of living index", year=2021)
+    )
+
+
+def test_a_work_with_no_title_or_doi_is_kept_not_merged():
+    from litmark.acquisition import resolve
+
+    blank = Work(source="a")
+    other = Work(source="b")
+
+    result = resolve("x", metadata_sources=[Fixed("a", [blank]), Fixed("b", [other])])
+
+    assert len(result.candidates) == 2

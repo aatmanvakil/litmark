@@ -8,6 +8,7 @@ confirmed download imports anything, and that path lives elsewhere.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,7 @@ from .model import (
 from .providers import is_fetchable
 
 __all__ = [
+    "title_key",
     "ACCEPTED_MANUSCRIPT",
     "PUBLISHED",
     "SUBMITTED_PREPRINT",
@@ -44,42 +46,87 @@ __all__ = [
 ]
 
 
+def _describe(exc: Exception) -> str:
+    """A short reason, with anything sensitive already redacted."""
+    from .fetch import FetchRefused
+
+    if isinstance(exc, FetchRefused):
+        wait = exc.details.get("retry_after")
+        if exc.reason == "rate_limited" and wait:
+            return f"rate limited; try again in about {int(wait)}s"
+        return exc.reason
+    return type(exc).__name__
+
+
 @dataclass
 class Resolution:
     query: str
     candidates: list[Candidate] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Providers that did not answer, so the interface can say which.
+    failed_providers: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
             "query": self.query,
             "candidates": [candidate.to_json() for candidate in self.candidates],
             "warnings": self.warnings,
+            "providers_failed": self.failed_providers,
             # Stated rather than implied, because it is the invariant that
             # makes this safe to run against a live project.
             "wrote_anything": False,
         }
 
 
+def _absorb(existing: Work, other: Work) -> None:
+    """Fill gaps from a second provider without overwriting what we have."""
+    for attribute in ("title", "journal", "year", "doi"):
+        if getattr(existing, attribute) is None:
+            setattr(existing, attribute, getattr(other, attribute))
+    if not existing.authors:
+        existing.authors = other.authors
+
+
+def title_key(work: Work) -> str | None:
+    """A comparison key for works with no DOI to join on.
+
+    Crossref and arXiv describe the same preprint with different
+    punctuation and capitalisation, and only one of them has a DOI, so
+    matching on the DOI alone leaves a visible duplicate in the card.
+    """
+    if not work.title:
+        return None
+    words = re.findall(r"[a-z0-9]+", work.title.lower())
+    if not words:
+        return None
+    return " ".join(words) + (f"|{work.year}" if work.year else "")
+
+
 def _merge(works: list[Work]) -> list[Work]:
-    """One entry per DOI; works without one are kept as they are."""
+    """One entry per work: by DOI, then by normalised title and year."""
     by_doi: dict[str, Work] = {}
-    loose: list[Work] = []
+    by_title: dict[str, Work] = {}
+    ordered: list[Work] = []
+
     for work in works:
-        if not work.doi:
-            loose.append(work)
-            continue
-        existing = by_doi.get(work.doi)
+        existing = by_doi.get(work.doi) if work.doi else None
         if existing is None:
-            by_doi[work.doi] = work
+            key = title_key(work)
+            if key is not None:
+                existing = by_title.get(key)
+        if existing is not None:
+            _absorb(existing, work)
+            # A DOI learned from the second provider indexes the merged work.
+            if existing.doi and existing.doi not in by_doi:
+                by_doi[existing.doi] = existing
             continue
-        # Fill gaps from a second provider without overwriting what we have.
-        for attribute in ("title", "journal", "year"):
-            if getattr(existing, attribute) is None:
-                setattr(existing, attribute, getattr(work, attribute))
-        if not existing.authors:
-            existing.authors = work.authors
-    return list(by_doi.values()) + loose
+        ordered.append(work)
+        if work.doi:
+            by_doi[work.doi] = work
+        key = title_key(work)
+        if key is not None:
+            by_title[key] = work
+    return ordered
 
 
 def resolve(
@@ -95,11 +142,13 @@ def resolve(
 
     works: list[Work] = []
     warnings: list[str] = []
+    failed: list[str] = []
     for source in metadata_sources:
         try:
             works.extend(source.works(query))
         except Exception as exc:  # noqa: BLE001 - reported, never invented around
-            warnings.append(f"{source.name} did not answer: {exc}")
+            warnings.append(f"{source.name} did not answer: {_describe(exc)}")
+            failed.append(source.name)
 
     candidates: list[Candidate] = []
     for work in _merge(works):
@@ -107,8 +156,14 @@ def resolve(
         for source in version_sources or []:
             try:
                 versions.extend(source.versions(work))
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{source.name} did not answer: {exc}")
+            except Exception as exc:  # noqa: BLE001 - one provider, one failure
+                # Independent degradation: Unpaywall timing out must still
+                # leave Crossref's work with its arXiv version attached.
+                note = f"{source.name} did not answer: {_describe(exc)}"
+                if note not in warnings:
+                    warnings.append(note)
+                if source.name not in failed:
+                    failed.append(source.name)
         # A version a provider offers but the fetch rules forbid is still
         # shown — as a link the user may open themselves, never as a download.
         for index, version in enumerate(versions):
@@ -128,4 +183,5 @@ def resolve(
         query=query,
         candidates=rank_candidates(candidates, query),
         warnings=warnings,
+        failed_providers=failed,
     )
