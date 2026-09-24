@@ -31,6 +31,9 @@ dependencies = [
   "pypdf>=4.2,<7.0",
   # The only outbound HTTP in the application, used solely by acquisition.
   "httpx>=0.27,<1.0",
+  # arXiv returns third-party XML; stdlib ElementTree is not hardened
+  # against entity-expansion attacks.
+  "defusedxml>=0.7,<1.0",
 ]
 
 [project.optional-dependencies]

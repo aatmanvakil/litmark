@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <title>A Preprint About Exchange Rates</title>
+    <published>2020-07-01T00:00:00Z</published>
+    <author><name>Anna Müller</name></author>
+    <author><name>Bo Lindqvist</name></author>
+    <link href="https://arxiv.org/abs/2007.00001v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="https://arxiv.org/pdf/2007.00001v1" rel="related" type="application/pdf"/>
+    <rights>arxiv-nonexclusive</rights>
+  </entry>
+</feed>

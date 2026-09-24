@@ -19,6 +19,7 @@ from .agent.runner import AgentRunner
 from .agent.tools import ProjectTools
 from .bibliography import Bibliography, build_bibliography
 from .acquisition import Resolution, is_fetchable, resolve
+from .acquisition.clients import build_sources
 from .acquisition.config import AcquisitionConfig
 from .acquisition.fetch import fetch_pdf
 from .collections import CollectionStore
@@ -60,9 +61,10 @@ class Services:
             max_upload_bytes=int(float(ingestion.get("max_upload_mb", 64)) * 1024 * 1024),
         )
         self.references = ReferenceStore(workspace)
-        # Providers are injected; none is configured until a transport exists.
-        self._metadata_sources: list[Any] = []
-        self._version_sources: list[Any] = []
+        # Built from [acquisition] plus the environment. Empty when nothing
+        # is enabled or available, which resolution reports rather than
+        # papering over.
+        self._metadata_sources, self._version_sources = build_sources(self.acquisition)
         self.collections = CollectionStore(workspace)
         self.proposals = ProposalStore(self.db)
         self.tools = ProjectTools(
