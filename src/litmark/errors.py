@@ -59,6 +59,13 @@ class RevisionConflict(WorkspaceError):
         )
 
 
+class Conflict(WorkspaceError):
+    """The thing was already decided, so this request came too late."""
+
+    code = "conflict"
+    status_code = 409
+
+
 class AgentUnavailable(WorkspaceError):
     """No agent backend is configured, installed, or authenticated."""
 

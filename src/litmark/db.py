@@ -92,6 +92,38 @@ CREATE TABLE IF NOT EXISTS changes (
     undone_at      TEXT,
     created_at     TEXT NOT NULL
 );
+-- One row per paper offered for download, holding the work and every version
+-- it was offered with. A run cannot pause, so a confirmation is a separate
+-- request and the offer has to survive a restart.
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'download',
+  conversation_id TEXT,
+  run_id TEXT,
+  after_message_id TEXT,
+  query TEXT NOT NULL,
+  doi TEXT,
+  title TEXT,
+  authors TEXT,
+  year INTEGER,
+  journal TEXT,
+  versions_json TEXT NOT NULL,
+  canonical_filename TEXT NOT NULL,
+  assign_collection_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  chosen_version_id TEXT,
+  document_id TEXT,
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  started_at TEXT,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS proposals_by_status ON proposals(status, created_at);
+CREATE INDEX IF NOT EXISTS proposals_by_conversation
+  ON proposals(conversation_id, created_at);
+
 CREATE INDEX IF NOT EXISTS changes_by_target ON changes(target_kind, target_id, created_at);
 """
 

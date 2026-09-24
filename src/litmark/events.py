@@ -28,6 +28,10 @@ MESSAGE_ADDED = "message_added"
 DOCUMENT_UPDATED = "document_updated"
 JOB_UPDATED = "job_updated"
 COLLECTION_UPDATED = "collection_updated"
+# A paper the agent offered, and the outcome once a person decided. Distinct
+# from file_proposed/file_changed, which are about edits to workspace files.
+DOWNLOAD_PROPOSED = "download_proposed"
+DOWNLOAD_RESOLVED = "download_resolved"
 
 
 class EventBus:
