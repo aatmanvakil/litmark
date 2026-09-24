@@ -194,23 +194,40 @@ class Services:
             )
         return resolve(query, metadata_sources=metadata, version_sources=versions)
 
-    def acquire_paper(self, query: str, url: str) -> dict[str, Any]:
+    def acquire_paper(
+        self, query: str, url: str, *, expect_doi: str | None = None
+    ) -> dict[str, Any]:
         """Download a confirmed version and import it.
 
         The URL is not taken on trust from the request. The resolution is
         re-run and the URL must appear in *this server's* own candidates and
         pass the fetchable rules — otherwise a caller could hand the fetcher
         any address it liked by claiming a permitted source.
+
+        ``expect_doi`` additionally pins the *work*. Matching on the URL alone
+        takes whichever candidate happens to sit at that address, so a
+        provider returning a different paper there between a proposal and its
+        confirmation would file the download under metadata nobody approved.
         """
         resolution = self.resolve_paper(query)
         chosen = None
         for candidate in resolution.candidates:
+            if expect_doi is not None and candidate.work.doi != expect_doi:
+                continue
             for version in candidate.versions:
                 if version.url == url and is_fetchable(version):
                     chosen = (candidate, version)
                     break
             if chosen:
                 break
+        if chosen is None and expect_doi is not None:
+            raise InvalidInput(
+                "That download no longer matches the paper it was offered for. "
+                "The provider now returns something different at that address, "
+                "so nothing was downloaded. Search again to see what changed.",
+                url=url,
+                expected_doi=expect_doi,
+            )
         if chosen is None:
             raise InvalidInput(
                 "That download was not offered for this query. Resolve the "

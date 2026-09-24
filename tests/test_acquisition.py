@@ -433,3 +433,85 @@ def test_a_known_doi_short_circuits_before_any_download(client, services, paper_
     assert payload["duplicate"] is True
     assert payload["matched_on"] == "doi"
     assert payload["document"]["document_id"] == document_id
+
+
+# --------------------------------------- predicted name and the pinned work
+
+
+def test_the_predicted_name_matches_what_the_import_produces(client, services, paper_one):
+    """The card promises a filename; the download must honour it."""
+    predicted = services.documents.predict_canonical_name(
+        title="Exchange Rate Disconnect",
+        authors="Anna Müller and Bo Lindqvist",
+        year=2021,
+        year_confirmed=True,
+    )
+
+    document_id = upload(client, "whatever.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+    actual = services.documents.update_metadata(
+        document_id,
+        title="Exchange Rate Disconnect",
+        authors="Anna Müller and Bo Lindqvist",
+        year=2021,
+    )
+
+    assert predicted == "Müller, Lindqvist (2021) – Exchange Rate Disconnect.pdf"
+    assert actual.pdf["canonical_name"] == predicted
+
+
+def test_an_unconfirmed_year_is_predicted_as_nd(services):
+    predicted = services.documents.predict_canonical_name(
+        title="A Work", authors="Alice Writer", year=2016, year_confirmed=False
+    )
+
+    assert "(n.d.)" in predicted
+
+
+def test_a_taken_name_is_predicted_with_a_suffix(client, services, paper_one):
+    document_id = upload(client, "a.pdf", paper_one)["imported"][0]["document"][
+        "document_id"
+    ]
+    services.documents.update_metadata(document_id, title="Shared", authors="A Writer")
+
+    predicted = services.documents.predict_canonical_name(
+        title="Shared", authors="A Writer", year=None, year_confirmed=False
+    )
+
+    assert predicted.endswith("(2).pdf")
+
+
+def test_a_swapped_work_at_the_same_url_is_refused(client, services):
+    """Pinning the URL alone would import a paper nobody confirmed."""
+    _configure(
+        services,
+        crossref_works(fixture("crossref_work.json")),
+        unpaywall_versions(fixture("unpaywall_open.json")),
+    )
+    url = "https://journals.example.org/jpe/exchange.pdf"
+
+    with pytest.raises(Exception) as caught:
+        services.acquire_paper(url=url, query="exchange rate", expect_doi="10.9999/different")
+
+    assert "no longer matches" in str(caught.value)
+    assert client.get("/api/documents").json()["documents"] == []
+
+
+def test_the_expected_doi_lets_the_right_work_through(services):
+    _configure(
+        services,
+        crossref_works(fixture("crossref_work.json")),
+        unpaywall_versions(fixture("unpaywall_open.json")),
+    )
+
+    # The matching DOI selects the candidate; the fetch itself is not reached
+    # here because no transport is configured, so a refusal proves selection.
+    with pytest.raises(Exception) as caught:
+        services.acquire_paper(
+            url="https://journals.example.org/jpe/exchange.pdf",
+            query="exchange rate",
+            expect_doi="10.1234/exchange.2021",
+        )
+
+    assert "no longer matches" not in str(caught.value)
