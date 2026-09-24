@@ -101,7 +101,61 @@ const STATE = {
 const ROUTES = new Map([
   ['/api/state', STATE],
   ['/api/notes/welcome', { note_id: 'welcome', title: 'Welcome', revision: 'rev-1', modified_at: '2026-01-01T00:00:00Z', text: '# Welcome\n\nHello **world**.\n' }],
-  ['/api/conversations/conv-1', { conversation_id: 'conv-1', title: 'Chat', backend_session_id: null, messages: [], runs: [] }],
+  [
+    '/api/conversations/conv-1',
+    {
+      conversation_id: 'conv-1',
+      title: 'Chat',
+      backend_session_id: null,
+      messages: [],
+      runs: [],
+      proposals: [
+        {
+          proposal_id: 'prop-1',
+          status: 'pending',
+          query: 'exchange rate',
+          work: {
+            title: 'Exchange Rate Disconnect',
+            authors: 'Anna Müller and Bo Lindqvist',
+            year: 2021,
+            journal: 'JPE',
+            doi: '10.1234/exchange.2021',
+          },
+          versions: [
+            {
+              version_id: 'v1',
+              version_type: 'accepted_manuscript',
+              url: 'https://eprints.lse.ac.uk/1/accepted.pdf',
+              host: 'repository',
+              license: null,
+              retrievable: true,
+              source: 'unpaywall',
+              reason: null,
+            },
+            {
+              version_id: 'v2',
+              version_type: 'published',
+              url: 'https://doi.org/10.1234/exchange.2021',
+              host: 'publisher',
+              license: null,
+              retrievable: false,
+              source: 'unpaywall',
+              reason: 'paywalled',
+            },
+          ],
+          canonical_filename: 'Müller, Lindqvist (2021) – Exchange Rate Disconnect.pdf',
+          assign_collection_id: null,
+          chosen_version_id: null,
+          document_id: null,
+          error: null,
+          attempts: 0,
+          after_message_id: null,
+          created_at: '2026-09-23T00:00:00Z',
+          expires_at: '2099-01-01T00:00:00Z',
+        },
+      ],
+    },
+  ],
   ['/api/changes', { changes: [] }],
 ])
 
@@ -128,16 +182,26 @@ function buildDom() {
     }
     return { ok: true, status: 200, text: async () => JSON.stringify(body) }
   }
+  const listeners = new Map()
   class FakeEventSource {
     constructor() {
       this.onopen = null
       this.onerror = null
       this.onmessage = null
     }
-    addEventListener() {}
+    addEventListener(type, handler) {
+      listeners.set(type, [...(listeners.get(type) ?? []), handler])
+    }
     close() {}
   }
   window.EventSource = FakeEventSource
+  // The harness cannot open a real stream, so expose a way to deliver one
+  // frame; a new event type is otherwise untestable here.
+  window.__emit = (type, payload) => {
+    for (const handler of listeners.get(type) ?? []) {
+      handler({ data: JSON.stringify({ type, ...payload }), lastEventId: '1' })
+    }
+  }
   if (!window.matchMedia) {
     window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
   }
@@ -233,5 +297,57 @@ test('the assignment popover lists full paths and filters', async () => {
     popover.querySelectorAll('input[type="checkbox"]').length,
     4,
     'every collection should be assignable',
+  )
+})
+
+test('a pending proposal renders one card with every version', async () => {
+  const { window } = buildDom()
+  window.eval(readFileSync(join(here, 'bundle', 'app.mjs'), 'utf8'))
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const card = window.document.querySelector('.proposal')
+  assert.ok(card, 'no proposal card rendered')
+  const text = card.textContent
+
+  // The three facts a confirmation must state.
+  assert.ok(text.includes('eprints.lse.ac.uk'), `host missing: ${text}`)
+  assert.ok(text.includes('Accepted manuscript'), `version type missing: ${text}`)
+  assert.ok(
+    text.includes('Müller, Lindqvist (2021) – Exchange Rate Disconnect.pdf'),
+    `canonical filename missing: ${text}`,
+  )
+
+  // One card for the paper, not one per version.
+  assert.equal(window.document.querySelectorAll('.proposal').length, 1)
+
+  // A retrievable version offers a download; a paywalled one does not.
+  const buttons = [...card.querySelectorAll('button.proposal-confirm')]
+  assert.equal(buttons.length, 1, 'a paywalled version should have no button')
+  assert.ok(buttons[0].textContent.includes('Download'), buttons[0].textContent)
+  assert.ok(text.includes('paywalled'), 'the paywalled version was hidden')
+
+  // Future tense only: nothing has been downloaded yet.
+  assert.ok(text.includes('Will be saved as'), 'the card implies it already saved')
+})
+
+test('a download_proposed frame is not swallowed by the event switch', async () => {
+  const { window } = buildDom()
+  let conversationFetches = 0
+  const realFetch = window.fetch
+  window.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input.url
+    if (url.includes('/api/conversations/conv-1')) conversationFetches += 1
+    return realFetch(input)
+  }
+  window.eval(readFileSync(join(here, 'bundle', 'app.mjs'), 'utf8'))
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const before = conversationFetches
+  window.__emit('download_proposed', { seq: 2, proposal_id: 'prop-1' })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+
+  assert.ok(
+    conversationFetches > before,
+    'the event did not trigger a reload, so it was dropped',
   )
 })

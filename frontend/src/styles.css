@@ -1221,3 +1221,80 @@ select {
 .sidebar .entry.in-scope {
   box-shadow: inset 2px 0 0 var(--accent);
 }
+
+/* -------------------------------------------------------------- proposals */
+
+.proposal {
+  margin: 0.5rem 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 0.86rem;
+}
+
+/* The one "this needs you" signal in the transcript. */
+.proposal.pending {
+  background: var(--accent-soft);
+}
+
+.proposal-work {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.proposal-work strong {
+  font-weight: 600;
+}
+
+.proposal-filename {
+  margin: 0.4rem 0 0.3rem;
+  font-size: 0.82rem;
+}
+
+.proposal-versions {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.proposal-versions li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+/* A real button, not a link: a download must not look like "Rename". */
+.proposal-confirm {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  background: var(--panel);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.proposal-confirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.proposal-error {
+  margin: 0.3rem 0;
+  color: var(--danger);
+}
+
+.proposal-outcome {
+  margin: 0.4rem 0 0;
+}
+
+.proposal-dismissed {
+  margin: 0.35rem 0;
+  font-size: 0.82rem;
+}
