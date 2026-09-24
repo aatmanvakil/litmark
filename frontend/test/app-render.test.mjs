@@ -208,3 +208,30 @@ test('the collection tree renders nesting, and orphans survive it', async () => 
     'a button is nested inside another button',
   )
 })
+
+test('the assignment popover lists full paths and filters', async () => {
+  const { window } = buildDom()
+  window.eval(readFileSync(join(here, 'bundle', 'app.mjs'), 'utf8'))
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  const trigger = [...window.document.querySelectorAll('button')].find(
+    (button) => button.textContent.trim() === 'Collections…',
+  )
+  assert.ok(trigger, 'no assignment trigger rendered')
+  trigger.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  const popover = window.document.querySelector('.assign-popover')
+  assert.ok(popover, 'the popover did not open')
+  // A nested collection is addressed by its path, not its bare name.
+  assert.ok(
+    popover.textContent.includes('International Macro / Dominant Currency'),
+    `expected a full path, got: ${popover.textContent}`,
+  )
+  assert.ok(popover.querySelector('input[type="search"]'), 'no filter input')
+  assert.equal(
+    popover.querySelectorAll('input[type="checkbox"]').length,
+    4,
+    'every collection should be assignable',
+  )
+})
