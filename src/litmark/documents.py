@@ -302,6 +302,34 @@ class DocumentStore:
             taken |= {comparable(p.name) for p in papers.iterdir() if p.is_file()}
         return taken
 
+    def predict_canonical_name(
+        self,
+        *,
+        title: str | None,
+        authors: str | None,
+        year: int | None,
+        year_confirmed: bool,
+    ) -> str:
+        """The name a paper *would* be saved under, before it is fetched.
+
+        Used by a download proposal so the confirmation can state the filename
+        up front, and by nothing else — the import derives the same name
+        through the same helpers, so the two cannot drift.
+
+        Two honest caveats for a caller showing this to a user: the collision
+        suffix can change if another paper claims the name first, and a work
+        with no confirmed year reads "n.d.".
+        """
+        from .naming import YEAR_CONFIRMED, canonical_name, unique_name
+
+        wanted = canonical_name(
+            authors=authors,
+            year=year,
+            title=title or "Untitled",
+            year_source=YEAR_CONFIRMED if year_confirmed else None,
+        )
+        return unique_name(wanted, self.taken_names())
+
     def place_pdf(self, document: Document, data: bytes) -> Document:
         """Write the canonical PDF and point the document at it."""
         from .naming import unique_name
