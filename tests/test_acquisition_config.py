@@ -164,3 +164,39 @@ def test_a_project_with_no_acquisition_section_is_fine(client):
 
     assert payload["acquisition"]["providers"]
     assert all(not p["available"] for p in payload["acquisition"]["providers"])
+
+
+# ----------------------------------------- the live check stays opt-in
+
+
+def test_the_live_script_refuses_without_its_gate():
+    """It is the only code that contacts a provider, so it must not fire."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).parent.parent / "scripts" / "live_metadata_check.py"
+    environment = {"PATH": "/usr/bin:/bin"}
+
+    result = subprocess.run(
+        [sys.executable, str(script), "/tmp/nowhere", "10.1/x"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 2
+    assert "LITMARK_LIVE_CHECK" in result.stderr
+    # It refused before importing litmark, so nothing was opened or read.
+    assert "Traceback" not in result.stderr
+
+
+def test_the_live_script_is_not_collected_as_a_test():
+    """pytest must stay offline; a collected script would not be."""
+    from pathlib import Path
+
+    script = Path(__file__).parent.parent / "scripts" / "live_metadata_check.py"
+
+    assert script.exists()
+    assert not script.name.startswith("test_")
+    assert script.parent.name == "scripts"
